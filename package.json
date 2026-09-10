@@ -1,0 +1,19 @@
+{
+  "name": "localsend-chat",
+  "version": "1.0.0",
+  "description": "局域网聊天 + 文件传输 + 文件夹共享网页应用（Node.js + Express + Socket.IO + HTTPS）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node .test-tmp/sio-share-test.js && node .test-tmp/nickname-test.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.0.0",
+    "socket.io": "^4.7.5"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}
