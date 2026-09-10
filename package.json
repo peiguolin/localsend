@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node .test-tmp/sio-share-test.js && node .test-tmp/nickname-test.js"
+    "test": "node .test-tmp/sio-share-test.js && node .test-tmp/nickname-test.js && node .test-tmp/webrtc-signal-test.js"
   },
   "dependencies": {
     "express": "^4.19.2",

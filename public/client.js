@@ -17,9 +17,21 @@
   const unreadPillText = document.getElementById('unreadPillText');
   const myNameInput = document.getElementById('myNameInput');
   const nickError = document.getElementById('nickError');
+  // WebRTC 通话弹窗
+  const callModal = document.getElementById('callModal');
+  const callTitle = document.getElementById('callTitle');
+  const callPeerName = document.getElementById('callPeerName');
+  const callStatus = document.getElementById('callStatus');
+  const callTimerEl = document.getElementById('callTimer');
+  const callAudio = document.getElementById('callAudio');
+  const callAcceptBtn = document.getElementById('callAcceptBtn');
+  const callRejectBtn = document.getElementById('callRejectBtn');
+  const callMuteBtn = document.getElementById('callMuteBtn');
+  const callEndBtn = document.getElementById('callEndBtn');
 
   const NICK_STORAGE_KEY = 'localsend-nickname';
   let myNickname = '';
+  let myId = '';
   let nickEditing = false;
   let nickErrorTimer = null;
 
@@ -180,6 +192,403 @@
     playPing();
   }
 
+  // ---------- WebRTC 语音通话 ----------
+  // 状态机：idle → ringing(主叫等待) / incoming(被叫来电) → active(通话中) → idle
+  let callState = 'idle';
+  let callId = '';
+  let peerId = '';
+  let peerName = '';
+  let pc = null;
+  let localStream = null;
+  let pendingOffer = null;   // 被叫在点击接听前收到的 offer 暂存
+  let callTimer = null;
+  let callSec = 0;
+  let ringCtx = null;
+  let ringTimer = null;
+  let muted = false;
+
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
+
+  function fmtDuration(sec) {
+    const m = String(Math.floor(sec / 60)).padStart(2, '0');
+    const s = String(sec % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  // ---------- 通话 UI ----------
+  function showCallModal() { callModal.hidden = false; }
+
+  function hideCallModal() {
+    callModal.hidden = true;
+    callTimerEl.hidden = true;
+    callTimerEl.textContent = '00:00';
+    callAcceptBtn.hidden = true;
+    callRejectBtn.hidden = true;
+    callMuteBtn.hidden = true;
+    callEndBtn.hidden = true;
+    callStatus.hidden = false;
+    callStatus.textContent = '';
+    callTitle.textContent = '语音通话';
+    callPeerName.textContent = '—';
+  }
+
+  function setCallUI(state, peer) {
+    showCallModal();
+    callPeerName.textContent = peer || '—';
+    callAcceptBtn.hidden = !(state === 'incoming');
+    callRejectBtn.hidden = !(state === 'incoming');
+    callMuteBtn.hidden = !(state === 'active');
+    callMuteBtn.textContent = muted ? '取消静音' : '静音';
+    callEndBtn.hidden = false;
+    callEndBtn.textContent = (state === 'ringing') ? '取消' : '挂断';
+    if (state === 'ringing') {
+      callTitle.textContent = '正在呼叫…';
+      callStatus.textContent = '等待对方接听';
+      callStatus.hidden = false;
+    } else if (state === 'incoming') {
+      callTitle.textContent = '来电';
+      callStatus.textContent = '邀请你语音通话';
+      callStatus.hidden = false;
+    } else if (state === 'active') {
+      callTitle.textContent = '通话中';
+      callStatus.hidden = true;
+      callTimerEl.hidden = false;
+    }
+  }
+
+  function startCallTimer() {
+    callSec = 0;
+    callTimerEl.textContent = '00:00';
+    clearInterval(callTimer);
+    callTimer = setInterval(() => {
+      callSec++;
+      callTimerEl.textContent = fmtDuration(callSec);
+    }, 1000);
+  }
+
+  function stopCallTimer() {
+    clearInterval(callTimer);
+    callTimer = null;
+    callSec = 0;
+  }
+
+  // ---------- 铃声（Web Audio 模拟来电振铃） ----------
+  function startRingTone() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!ringCtx) ringCtx = new AC();
+      if (ringCtx.state === 'suspended') ringCtx.resume();
+      let step = 0;
+      ringTimer = setInterval(() => {
+        const t0 = ringCtx.currentTime;
+        [880, 1174].forEach((freq, i) => {
+          const osc = ringCtx.createOscillator();
+          const gain = ringCtx.createGain();
+          const tt = t0 + i * 0.14;
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, tt);
+          gain.gain.exponentialRampToValueAtTime(0.16, tt + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, tt + 0.22);
+          osc.connect(gain).connect(ringCtx.destination);
+          osc.start(tt);
+          osc.stop(tt + 0.24);
+        });
+        step++;
+      }, 1400);
+    } catch (_) { /* 忽略铃声失败 */ }
+  }
+
+  function stopRingTone() {
+    clearInterval(ringTimer);
+    ringTimer = null;
+  }
+
+  // ---------- RTCPeerConnection 封装 ----------
+  function createPeer() {
+    const p = new RTCPeerConnection(RTC_CONFIG);
+    // 本地媒体轨加入连接
+    if (localStream) {
+      localStream.getTracks().forEach((t) => p.addTrack(t, localStream));
+    }
+    // 收到远端音频
+    p.ontrack = (e) => {
+      if (e.streams && e.streams[0]) {
+        callAudio.srcObject = e.streams[0];
+        callAudio.hidden = false;
+        callAudio.play().catch(() => {});
+      }
+    };
+    // 收集 ICE 候选并转发
+    p.onicecandidate = (e) => {
+      if (e.candidate && peerId && callState === 'active') {
+        socket.emit('rtc_ice', { toId: peerId, candidate: e.candidate });
+      }
+    };
+    p.onconnectionstatechange = () => {
+      if (p.connectionState === 'failed' || p.connectionState === 'closed') {
+        // 连接失败/断开 → 结束通话（避免双方都发 call_end 造成重复，由一端清理）
+        if (callState === 'active') {
+          socket.emit('call_end', { toId: peerId });
+          cleanupCall('连接已断开');
+        }
+      }
+    };
+    return p;
+  }
+
+  function closePeer() {
+    if (pc) {
+      try { pc.onicecandidate = null; pc.ontrack = null; pc.onconnectionstatechange = null; } catch (_) {}
+      try { pc.close(); } catch (_) {}
+      pc = null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      localStream = null;
+    }
+    callAudio.srcObject = null;
+    callAudio.hidden = true;
+  }
+
+  // 收尾：清理媒体/连接/UI/铃声，回到 idle
+  function cleanupCall(message) {
+    stopCallTimer();
+    stopRingTone();
+    closePeer();
+    pendingOffer = null;
+    callId = '';
+    peerId = '';
+    peerName = '';
+    muted = false;
+    callState = 'idle';
+    hideCallModal();
+    if (message) setHint(message, 'success');
+  }
+
+  function failCall(message) {
+    cleanupCall(message || '通话结束');
+  }
+
+  async function getMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('浏览器不支持麦克风（需 HTTPS + 现代浏览器）');
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  // ---------- 对外动作 ----------
+  // 主叫：点击成员列表电话图标
+  async function startCall(target) {
+    if (callState !== 'idle') return;
+    if (!target || !target.id || target.id === myId) return;
+    peerId = target.id;
+    peerName = target.nickname || '对方';
+    callId = '';
+    callState = 'ringing';
+    setCallUI('ringing', peerName);
+    startRingTone();
+    try {
+      localStream = await getMic();
+    } catch (_) {
+      failCall('无法获取麦克风权限，请检查浏览器设置');
+      return;
+    }
+    pc = createPeer();
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+    } catch (_) {
+      failCall('创建通话失败');
+      return;
+    }
+    // 通知服务器发起呼叫（offer 在对方接听前就已发出，被叫端会暂存）
+    socket.emit('call_user', { targetId: target.id });
+    socket.emit('rtc_offer', { toId: target.id, sdp: pc.localDescription });
+  }
+
+  // 被叫：接听
+  async function acceptCall() {
+    if (callState !== 'incoming') return;
+    stopRingTone();
+    callState = 'active';
+    setCallUI('active', peerName);
+    try {
+      localStream = await getMic();
+    } catch (_) {
+      socket.emit('call_reject', { callId, fromId: peerId });
+      failCall('无法获取麦克风权限，已拒绝通话');
+      return;
+    }
+    pc = createPeer();
+    if (pendingOffer) {
+      try {
+        await pc.setRemoteDescription(pendingOffer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('rtc_answer', { toId: peerId, sdp: pc.localDescription });
+      } catch (_) {
+        socket.emit('call_end', { toId: peerId });
+        failCall('通话建立失败');
+        return;
+      }
+    }
+    pendingOffer = null;
+    socket.emit('call_accept', { callId, fromId: peerId });
+    startCallTimer();
+  }
+
+  // 被叫：拒绝
+  function rejectCall() {
+    if (callState !== 'incoming') return;
+    socket.emit('call_reject', { callId, fromId: peerId });
+    stopRingTone();
+    hideCallModal();
+    callState = 'idle';
+    pendingOffer = null;
+    peerId = '';
+    peerName = '';
+  }
+
+  // 静音切换
+  function toggleMute() {
+    if (!localStream) return;
+    muted = !muted;
+    localStream.getAudioTracks().forEach((t) => { t.enabled = !muted; });
+    callMuteBtn.textContent = muted ? '取消静音' : '静音';
+  }
+
+  // 挂断 / 取消
+  function endCall() {
+    if (callState === 'idle') return;
+    if (callState === 'ringing') {
+      socket.emit('call_cancel', { callId, toId: peerId });
+    } else if (callState === 'incoming') {
+      rejectCall();
+      return;
+    } else if (callState === 'active') {
+      socket.emit('call_end', { toId: peerId });
+    }
+    cleanupCall();
+  }
+
+  // ---------- 信令监听 ----------
+  socket.on('incoming_call', (data) => {
+    if (callState !== 'idle') {
+      // 忙线：直接拒绝
+      socket.emit('call_reject', { callId: data.callId, fromId: data.fromId });
+      return;
+    }
+    callId = data.callId || '';
+    peerId = data.fromId;
+    peerName = data.fromName || '对方';
+    pendingOffer = null;
+    callState = 'incoming';
+    setCallUI('incoming', peerName);
+    startRingTone();
+    // 页面在后台也提醒（铃声已响；再补一个系统通知）
+    if (document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(`${peerName} 邀请你语音通话`, { body: '点击接听', icon: drawFavicon(0), tag: 'call' });
+        n.onclick = () => { window.focus(); };
+      } catch (_) {}
+    }
+  });
+
+  socket.on('call_ringing', (data) => {
+    // 主叫侧确认呼叫已发出（callId 回填）
+    callId = data.callId || callId;
+    peerName = data.toName || peerName;
+    setCallUI('ringing', peerName);
+  });
+
+  socket.on('call_accepted', (data) => {
+    if (callState !== 'ringing') return;
+    callId = data.callId || callId;
+    peerName = data.toName || peerName;
+    callState = 'active';
+    stopRingTone();
+    setCallUI('active', peerName);
+    startCallTimer();
+  });
+
+  socket.on('call_rejected', () => {
+    if (callState === 'ringing') failCall('对方拒绝了通话');
+  });
+
+  socket.on('call_busy', () => {
+    if (callState === 'ringing') failCall('对方正在通话中，请稍后再试');
+  });
+
+  socket.on('call_failed', (data) => {
+    if (callState === 'ringing') failCall((data && data.error) || '对方不在线');
+  });
+
+  socket.on('call_cancelled', () => {
+    if (callState === 'incoming') {
+      stopRingTone();
+      hideCallModal();
+      callState = 'idle';
+      pendingOffer = null;
+      peerId = '';
+      peerName = '';
+      setHint('对方已取消通话', 'success');
+    }
+  });
+
+  socket.on('call_ended', (data) => {
+    if (callState === 'active' || callState === 'ringing') {
+      cleanupCall(data && data.reason === 'offline' ? '对方已离线，通话结束' : '通话已结束');
+    }
+  });
+
+  socket.on('rtc_offer', async (data) => {
+    if (data.fromId !== peerId) return;
+    if (callState === 'incoming') {
+      pendingOffer = data.sdp;
+      return;
+    }
+    if (callState === 'active' && pc && !pc.remoteDescription) {
+      try {
+        await pc.setRemoteDescription(data.sdp);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('rtc_answer', { toId: peerId, sdp: pc.localDescription });
+      } catch (_) { /* 忽略 */ }
+    }
+  });
+
+  socket.on('rtc_answer', async (data) => {
+    if (data.fromId !== peerId || !pc || callState !== 'active') return;
+    try {
+      if (!pc.remoteDescription) await pc.setRemoteDescription(data.sdp);
+    } catch (_) { /* 忽略 */ }
+  });
+
+  socket.on('rtc_ice', async (data) => {
+    if (data.fromId !== peerId || !pc) return;
+    try {
+      await pc.addIceCandidate(data.candidate);
+    } catch (_) { /* 候选可能已过期 */ }
+  });
+
+  // 按钮绑定
+  callAcceptBtn.addEventListener('click', acceptCall);
+  callRejectBtn.addEventListener('click', rejectCall);
+  callMuteBtn.addEventListener('click', toggleMute);
+  callEndBtn.addEventListener('click', endCall);
+
+  // 断线清理
+  socket.on('disconnect', () => {
+    if (callState !== 'idle') cleanupCall('连接断开，通话结束');
+  });
+
   function setHint(text, cls) {
     uploadHint.textContent = text;
     uploadHint.className = 'upload-hint show' + (cls ? ' ' + cls : '');
@@ -313,7 +722,9 @@
       memberList.appendChild(li);
       return;
     }
-    members.forEach((name) => {
+    members.forEach((m) => {
+      const name = (m && m.nickname) || String(m);
+      const id = m && m.id;
       const li = document.createElement('li');
       const dot = document.createElement('span');
       dot.className = 'member-dot';
@@ -324,11 +735,22 @@
       nameSpan.style.whiteSpace = 'nowrap';
       li.appendChild(dot);
       li.appendChild(nameSpan);
-      if (name === myNickname) {
+      if (name === myNickname && id === myId) {
         const me = document.createElement('span');
         me.className = 'member-me';
         me.textContent = '我';
         li.appendChild(me);
+      } else if (id && id !== myId) {
+        // 语音通话按钮（不能呼叫自己）
+        const callBtn = document.createElement('button');
+        callBtn.type = 'button';
+        callBtn.className = 'member-call';
+        callBtn.title = `语音呼叫 ${name}`;
+        callBtn.innerHTML =
+          '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
+        callBtn.addEventListener('click', () => startCall({ id, nickname: name }));
+        li.appendChild(callBtn);
       }
       memberList.appendChild(li);
     });
@@ -347,6 +769,7 @@
 
   socket.on('welcome', (data) => {
     myNickname = data.nickname;
+    myId = data.id || '';
     myNameEl.textContent = myNickname;
     renderSystemMsg({
       text: `你已加入聊天室，你的昵称是 ${myNickname}`

@@ -61,7 +61,7 @@ async function main() {
     const sys = await sysP;
     check('广播改名系统消息', sys.type === 'rename' && sys.text.includes('改名为') && sys.text.includes('小明'), sys.text);
     await memP;
-    check('成员列表已更新为新昵称', Array.isArray(aMembers) && aMembers.includes('小明'));
+    check('成员列表已更新为新昵称', Array.isArray(aMembers) && aMembers.some((m) => m.nickname === '小明'));
 
     console.log('【唯一性与校验】');
     const dup = await emitAck(b, 'set_nickname', { name: '小明' });
@@ -103,7 +103,7 @@ async function main() {
     check('静默改名成功', rs.ok === true);
     await sleep(400);
     check('静默改名不广播系统消息', cSysCount === 0);
-    check('静默改名仍更新成员列表', Array.isArray(aMembers) && aMembers.includes('静默用户'));
+    check('静默改名仍更新成员列表', Array.isArray(aMembers) && aMembers.some((m) => m.nickname === '静默用户'));
 
     a.disconnect(); b.disconnect(); c.disconnect();
   } finally {

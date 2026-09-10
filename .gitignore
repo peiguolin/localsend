@@ -15,6 +15,9 @@ certs/
 # 本地工具配置
 .opencode/
 
+# 测试运行时产生的假共享目录
+.test-tmp/share-root/
+
 # 系统文件
 .DS_Store
 Thumbs.db

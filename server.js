@@ -499,6 +499,53 @@ app.get('/api/share/:id/pull', (req, res) => {
 
 // ---------- Socket.IO ----------
 const onlineUsers = new Map(); // socketId -> nickname
+const activeCalls = new Map(); // socketId -> { peerId, peerName, callId }  进行中的通话
+
+// ---------- 实时白板状态 ----------
+const wbStrokes = []; // {id, authorId, author, color, size, tool, pts:[[x,y]...]}  已完成笔迹历史
+let wbTotalPoints = 0;
+const WB_MAX_STROKES = 1500;          // 历史笔迹数上限
+const WB_MAX_POINTS_PER_STROKE = 5000; // 单笔点数上限
+const WB_MAX_TOTAL_POINTS = 200000;    // 历史总点数上限（超出丢最旧）
+const WB_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function wbClamp01(v) {
+  v = Number(v);
+  if (!Number.isFinite(v)) return null;
+  return Math.min(1, Math.max(0, v));
+}
+
+function wbCleanPoints(ptsRaw, maxCount) {
+  const pts = [];
+  for (const p of ptsRaw) {
+    if (!Array.isArray(p) || p.length !== 2) continue;
+    const x = wbClamp01(p[0]);
+    const y = wbClamp01(p[1]);
+    if (x === null || y === null) continue;
+    pts.push([Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4]);
+    if (pts.length >= maxCount) break;
+  }
+  return pts;
+}
+
+// 校验并净化一条完整笔迹；非法返回 null
+function wbSanitizeStroke(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const tool = raw.tool === 'eraser' ? 'eraser' : 'pen';
+  const color = WB_COLOR_RE.test(raw.color) ? raw.color : '#1f2328';
+  let size = Number(raw.size);
+  if (!Number.isFinite(size)) size = 4;
+  size = Math.min(40, Math.max(1, size));
+  const pts = wbCleanPoints(raw.pts, WB_MAX_POINTS_PER_STROKE);
+  if (!pts.length) return null;
+  return { color, size, tool, pts };
+}
+
+function wbTrimHistory() {
+  while (wbStrokes.length && (wbStrokes.length > WB_MAX_STROKES || wbTotalPoints > WB_MAX_TOTAL_POINTS)) {
+    wbTotalPoints -= wbStrokes.shift().pts.length;
+  }
+}
 
 function randomNickname() {
   return `用户${Math.floor(1000 + Math.random() * 9000)}`;
@@ -514,7 +561,7 @@ function hasControlChars(s) {
 }
 
 function broadcastMembers() {
-  const members = Array.from(onlineUsers.values());
+  const members = Array.from(onlineUsers.entries()).map(([id, nickname]) => ({ id, nickname }));
   io.emit('members_update', members);
 }
 
@@ -523,8 +570,8 @@ io.on('connection', (socket) => {
   let lastRenameAt = 0;
   onlineUsers.set(socket.id, nickname);
 
-  // 通知本人
-  socket.emit('welcome', { nickname, online: onlineUsers.size });
+  // 通知本人（id 用于 WebRTC 通话信令定位）
+  socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size });
   // 推送当前共享列表
   socket.emit('shares_update', Array.from(shares.values()).map(publicShareInfo));
 
@@ -581,6 +628,96 @@ io.on('connection', (socket) => {
       });
     }
     cb({ ok: true, nickname: name });
+  });
+
+  // ---------- WebRTC 语音通话信令 ----------
+  // 所有信令都由服务端转发：fromId 一律取发送者 socket.id，客户端无法伪造身份
+
+  // 查找在线目标；返回 null 表示不可呼叫
+  function findCallTarget(targetId) {
+    if (!targetId || targetId === socket.id) return null;
+    if (!onlineUsers.has(targetId)) return null;
+    return targetId;
+  }
+
+  // 呼叫：校验目标在线且空闲，通知双方
+  socket.on('call_user', (data) => {
+    const targetId = findCallTarget(data && data.targetId);
+    if (!targetId) {
+      return socket.emit('call_failed', { reason: 'offline', error: '对方已离线或不在成员列表中' });
+    }
+    if (activeCalls.has(socket.id) || activeCalls.has(targetId)) {
+      return socket.emit('call_busy', { targetId, error: '有一方正在通话中' });
+    }
+    const callId = crypto.randomBytes(8).toString('hex');
+    const targetSocket = io.sockets.sockets.get(targetId);
+    targetSocket.emit('incoming_call', { callId, fromId: socket.id, fromName: nickname });
+    socket.emit('call_ringing', { callId, toId: targetId, toName: onlineUsers.get(targetId) });
+  });
+
+  // 接听：记录双方通话关系
+  socket.on('call_accept', (data) => {
+    const fromId = String((data && data.fromId) || '');
+    if (!onlineUsers.has(fromId) || fromId === socket.id) return;
+    if (activeCalls.has(fromId)) {
+      return socket.emit('call_busy', { targetId: fromId, error: '对方已接通其他通话' });
+    }
+    const callId = String((data && data.callId) || '') || crypto.randomBytes(8).toString('hex');
+    activeCalls.set(fromId, { peerId: socket.id, peerName: nickname, callId });
+    activeCalls.set(socket.id, { peerId: fromId, peerName: onlineUsers.get(fromId), callId });
+    const caller = io.sockets.sockets.get(fromId);
+    if (caller) caller.emit('call_accepted', { callId, toId: socket.id, toName: nickname });
+  });
+
+  // 拒绝
+  socket.on('call_reject', (data) => {
+    const fromId = String((data && data.fromId) || '');
+    const caller = io.sockets.sockets.get(fromId);
+    if (caller) caller.emit('call_rejected', { callId: String((data && data.callId) || '') });
+  });
+
+  // 主叫取消（对方未接时）
+  socket.on('call_cancel', (data) => {
+    const toId = String((data && data.toId) || '');
+    const callee = io.sockets.sockets.get(toId);
+    if (callee) callee.emit('call_cancelled', { callId: String((data && data.callId) || '') });
+  });
+
+  // 挂断（任一方）
+  function endCallWith(socketId, peerId) {
+    const rel = activeCalls.get(socketId);
+    const callId = rel ? rel.callId : '';
+    if (peerId) {
+      activeCalls.delete(socketId);
+      activeCalls.delete(peerId);
+    }
+    return callId;
+  }
+
+  socket.on('call_end', (data) => {
+    const peerId = String((data && data.toId) || '');
+    if (activeCalls.has(socket.id) && activeCalls.get(socket.id).peerId === peerId) {
+      endCallWith(socket.id, peerId);
+    }
+    const peer = io.sockets.sockets.get(peerId);
+    if (peer) peer.emit('call_ended', { fromId: socket.id, reason: 'hangup' });
+  });
+
+  // SDP / ICE 转发
+  socket.on('rtc_offer', (data) => {
+    const toId = String((data && data.toId) || '');
+    const peer = io.sockets.sockets.get(toId);
+    if (peer && peer.connected) peer.emit('rtc_offer', { fromId: socket.id, sdp: data && data.sdp });
+  });
+  socket.on('rtc_answer', (data) => {
+    const toId = String((data && data.toId) || '');
+    const peer = io.sockets.sockets.get(toId);
+    if (peer && peer.connected) peer.emit('rtc_answer', { fromId: socket.id, sdp: data && data.sdp });
+  });
+  socket.on('rtc_ice', (data) => {
+    const toId = String((data && data.toId) || '');
+    const peer = io.sockets.sockets.get(toId);
+    if (peer && peer.connected) peer.emit('rtc_ice', { fromId: socket.id, candidate: data && data.candidate });
   });
 
   // ---------- 文件夹共享 ----------
@@ -669,6 +806,16 @@ io.on('connection', (socket) => {
 
   // 断线
   socket.on('disconnect', () => {
+    // 通话方离线 → 通知对方通话结束
+    const callRel = activeCalls.get(socket.id);
+    if (callRel) {
+      const peer = io.sockets.sockets.get(callRel.peerId);
+      if (peer && peer.connected) {
+        peer.emit('call_ended', { fromId: socket.id, reason: 'offline' });
+      }
+      activeCalls.delete(socket.id);
+      activeCalls.delete(callRel.peerId);
+    }
     onlineUsers.delete(socket.id);
     // 清理该连接的所有 token
     for (const [token, t] of shareTokens) {

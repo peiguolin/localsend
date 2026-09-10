@@ -476,6 +476,33 @@ body {
   flex-shrink: 0;
 }
 
+.member-call {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0;
+}
+
+.member-list li:hover .member-call,
+.member-call:focus-visible {
+  opacity: 1;
+}
+
+.member-call:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .empty-members {
   font-size: 13px;
   color: var(--text-faint);
@@ -1022,6 +1049,101 @@ body {
   gap: 10px;
   margin-top: 4px;
 }
+
+/* ===== 语音通话弹窗 ===== */
+.call-card {
+  align-items: center;
+  text-align: center;
+  padding: 28px 24px;
+}
+
+.call-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: callPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes callPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 110, 247, 0.35); }
+  50% { box-shadow: 0 0 0 12px rgba(79, 110, 247, 0); }
+}
+
+.call-title {
+  font-size: 15px;
+  font-weight: 650;
+  margin-top: 4px;
+}
+
+.call-peer {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.call-status {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.call-timer {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.call-btns {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.call-btn {
+  min-width: 86px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.call-accept {
+  background: var(--success);
+  color: #fff;
+}
+
+.call-accept:hover { background: #138a3d; }
+
+.call-reject {
+  background: var(--danger);
+  color: #fff;
+}
+
+.call-reject:hover { background: #b91c1c; }
+
+.call-mute {
+  background: #f2f3f5;
+  color: var(--text);
+}
+
+.call-mute:hover { background: #e5e7eb; }
+
+.call-end {
+  background: var(--danger);
+  color: #fff;
+}
+
+.call-end:hover { background: #b91c1c; }
 
 /* ===== 共享面板响应式 ===== */
 @media (max-width: 720px) {
