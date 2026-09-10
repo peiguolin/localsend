@@ -499,7 +499,12 @@ app.get('/api/share/:id/pull', (req, res) => {
 
 // ---------- Socket.IO ----------
 const onlineUsers = new Map(); // socketId -> nickname
-const activeCalls = new Map(); // socketId -> { peerId, peerName, callId }  进行中的通话
+
+// 多方语音通话房间（WebRTC Mesh）：
+// callRooms: roomId -> { ownerId, members:Set<socketId>(已接通), ringing:Set<socketId>(正在振铃) }
+// memberRooms: socketId -> roomId（振铃中或通话中，一个用户同时只在一个房间）
+const callRooms = new Map();
+const memberRooms = new Map();
 
 // ---------- 实时白板状态 ----------
 const wbStrokes = []; // {id, authorId, author, color, size, tool, pts:[[x,y]...]}  已完成笔迹历史
@@ -648,95 +653,153 @@ io.on('connection', (socket) => {
     cb({ ok: true, nickname: name });
   });
 
-  // ---------- WebRTC 语音通话信令 ----------
-  // 所有信令都由服务端转发：fromId 一律取发送者 socket.id，客户端无法伪造身份
+  // ---------- 多方语音通话信令（WebRTC Mesh 房间模型） ----------
+  // 1:1 是 targets=[1人] 的特例；身份一律以发送者 socket.id 为准，客户端无法伪造
 
-  // 查找在线目标；返回 null 表示不可呼叫
-  function findCallTarget(targetId) {
-    if (!targetId || targetId === socket.id) return null;
-    if (!onlineUsers.has(targetId)) return null;
-    return targetId;
+  function roomRoster(room) {
+    return Array.from(room.members).map((id) => ({ id, nickname: onlineUsers.get(id) || '?' }));
   }
 
-  // 呼叫：校验目标在线且空闲，通知双方
+  // 广播给房间内所有已接通成员
+  function emitToRoom(room, event, payload) {
+    for (const id of room.members) {
+      const s = io.sockets.sockets.get(id);
+      if (s && s.connected) s.emit(event, payload);
+    }
+  }
+
+  // 成员离开房间（挂断/取消/离线），reason: 'hangup' | 'cancel' | 'offline'
+  function handleMemberLeave(socketId, reason) {
+    const roomId = memberRooms.get(socketId);
+    if (!roomId) return;
+    const room = callRooms.get(roomId);
+    if (!room) { memberRooms.delete(socketId); return; }
+    const isOwner = room.ownerId === socketId;
+    const hadRinging = room.ringing.size > 0;
+    room.members.delete(socketId);
+    room.ringing.delete(socketId);
+    memberRooms.delete(socketId);
+    const name = onlineUsers.get(socketId) || '?';
+    // 通知剩余已接通成员
+    for (const id of room.members) {
+      const s = io.sockets.sockets.get(id);
+      if (s && s.connected) s.emit('room_member_left', { roomId, memberId: socketId, memberName: name, reason });
+    }
+    // 发起者离开且还有人在振铃 → 全部取消
+    if (isOwner && hadRinging) {
+      for (const id of room.ringing) {
+        const s = io.sockets.sockets.get(id);
+        if (s && s.connected) s.emit('call_cancelled', { roomId });
+        memberRooms.delete(id);
+      }
+      room.ringing.clear();
+    }
+    // 房间没人或只剩一人且无人振铃 → 解散，释放剩余成员的占用标记
+    if (room.ringing.size === 0 && room.members.size <= 1) {
+      for (const id of room.members) memberRooms.delete(id);
+      callRooms.delete(roomId);
+    }
+  }
+
+  // 发起呼叫：targets 支持多个；逐个过滤在线/空闲
   socket.on('call_user', (data) => {
-    const targetId = findCallTarget(data && data.targetId);
-    if (!targetId) {
-      return socket.emit('call_failed', { reason: 'offline', error: '对方已离线或不在成员列表中' });
+    if (memberRooms.has(socket.id)) {
+      return socket.emit('call_failed', { reason: 'busy', error: '你正在通话中' });
     }
-    if (activeCalls.has(socket.id) || activeCalls.has(targetId)) {
-      return socket.emit('call_busy', { targetId, error: '有一方正在通话中' });
+    const raw = Array.isArray(data && data.targets) ? data.targets : [];
+    const targets = [];   // 可呼叫（在线且空闲）
+    const busy = [];
+    const offline = [];
+    const seen = new Set();
+    for (const t of raw) {
+      const tid = String(t || '');
+      if (!tid || tid === socket.id || seen.has(tid)) continue;
+      seen.add(tid);
+      if (!onlineUsers.has(tid)) { offline.push({ id: tid, nickname: tid }); continue; }
+      if (memberRooms.has(tid)) { busy.push({ id: tid, nickname: onlineUsers.get(tid) }); continue; }
+      targets.push({ id: tid, nickname: onlineUsers.get(tid) });
     }
-    const callId = crypto.randomBytes(8).toString('hex');
-    const targetSocket = io.sockets.sockets.get(targetId);
-    targetSocket.emit('incoming_call', { callId, fromId: socket.id, fromName: nickname });
-    socket.emit('call_ringing', { callId, toId: targetId, toName: onlineUsers.get(targetId) });
+    if (!targets.length) {
+      const reason = (busy.length || offline.length) ? 'nobody' : 'empty';
+      return socket.emit('call_failed', { reason, error: '没有可呼叫的成员（其余忙线或离线）', busy, offline });
+    }
+    const roomId = crypto.randomBytes(8).toString('hex');
+    const room = { ownerId: socket.id, members: new Set([socket.id]), ringing: new Set() };
+    for (const t of targets) room.ringing.add(t.id);
+    callRooms.set(roomId, room);
+    memberRooms.set(socket.id, roomId);
+    for (const t of targets) memberRooms.set(t.id, roomId); // 振铃目标也标记为占用
+    const roster = roomRoster(room);
+    for (const t of targets) {
+      const s = io.sockets.sockets.get(t.id);
+      if (s && s.connected) s.emit('incoming_call', { roomId, fromId: socket.id, fromName: nickname, targets, roster });
+    }
+    socket.emit('call_ringing', { roomId, targets, busy, offline });
   });
 
-  // 接听：记录双方通话关系
+  // 接听：从振铃移入已接通，广播给全房间（含新人）以便建立 Mesh 连接
   socket.on('call_accept', (data) => {
-    const fromId = String((data && data.fromId) || '');
-    if (!onlineUsers.has(fromId) || fromId === socket.id) return;
-    if (activeCalls.has(fromId)) {
-      return socket.emit('call_busy', { targetId: fromId, error: '对方已接通其他通话' });
+    const roomId = String((data && data.roomId) || '');
+    const room = callRooms.get(roomId);
+    if (!room) return socket.emit('call_failed', { reason: 'gone', error: '通话已结束' });
+    if (memberRooms.has(socket.id) && memberRooms.get(socket.id) !== roomId) {
+      return socket.emit('call_failed', { reason: 'busy', error: '你正在其他通话中' });
     }
-    const callId = String((data && data.callId) || '') || crypto.randomBytes(8).toString('hex');
-    activeCalls.set(fromId, { peerId: socket.id, peerName: nickname, callId });
-    activeCalls.set(socket.id, { peerId: fromId, peerName: onlineUsers.get(fromId), callId });
-    const caller = io.sockets.sockets.get(fromId);
-    if (caller) caller.emit('call_accepted', { callId, toId: socket.id, toName: nickname });
+    if (!room.ringing.has(socket.id)) return;
+    room.ringing.delete(socket.id);
+    room.members.add(socket.id);
+    memberRooms.set(socket.id, roomId);
+    emitToRoom(room, 'room_member_joined', {
+      roomId,
+      member: { id: socket.id, nickname },
+      members: roomRoster(room)
+    });
   });
 
   // 拒绝
   socket.on('call_reject', (data) => {
-    const fromId = String((data && data.fromId) || '');
-    const caller = io.sockets.sockets.get(fromId);
-    if (caller) caller.emit('call_rejected', { callId: String((data && data.callId) || '') });
-  });
-
-  // 主叫取消（对方未接时）
-  socket.on('call_cancel', (data) => {
-    const toId = String((data && data.toId) || '');
-    const callee = io.sockets.sockets.get(toId);
-    if (callee) callee.emit('call_cancelled', { callId: String((data && data.callId) || '') });
-  });
-
-  // 挂断（任一方）
-  function endCallWith(socketId, peerId) {
-    const rel = activeCalls.get(socketId);
-    const callId = rel ? rel.callId : '';
-    if (peerId) {
-      activeCalls.delete(socketId);
-      activeCalls.delete(peerId);
+    const roomId = String((data && data.roomId) || '');
+    const room = callRooms.get(roomId);
+    if (!room) return;
+    if (room.ringing.has(socket.id)) {
+      room.ringing.delete(socket.id);
+      memberRooms.delete(socket.id);
     }
-    return callId;
-  }
+    const owner = io.sockets.sockets.get(room.ownerId);
+    if (owner && owner.connected) {
+      owner.emit('call_rejected', { roomId, memberId: socket.id, memberName: nickname });
+    }
+    if (room.members.size <= 1 && room.ringing.size === 0) {
+      // 全部目标都拒绝 → 房间解散，通知发起者
+      callRooms.delete(roomId);
+      memberRooms.delete(room.ownerId);
+      if (owner && owner.connected) {
+        owner.emit('call_failed', { reason: 'all_rejected', error: '对方均未接听' });
+      }
+    }
+  });
 
+  // 挂断/取消（任一方随时可用）
   socket.on('call_end', (data) => {
-    const peerId = String((data && data.toId) || '');
-    if (activeCalls.has(socket.id) && activeCalls.get(socket.id).peerId === peerId) {
-      endCallWith(socket.id, peerId);
-    }
-    const peer = io.sockets.sockets.get(peerId);
-    if (peer) peer.emit('call_ended', { fromId: socket.id, reason: 'hangup' });
+    handleMemberLeave(socket.id, 'hangup');
   });
 
-  // SDP / ICE 转发
-  socket.on('rtc_offer', (data) => {
-    const toId = String((data && data.toId) || '');
-    const peer = io.sockets.sockets.get(toId);
-    if (peer && peer.connected) peer.emit('rtc_offer', { fromId: socket.id, sdp: data && data.sdp });
-  });
-  socket.on('rtc_answer', (data) => {
-    const toId = String((data && data.toId) || '');
-    const peer = io.sockets.sockets.get(toId);
-    if (peer && peer.connected) peer.emit('rtc_answer', { fromId: socket.id, sdp: data && data.sdp });
-  });
-  socket.on('rtc_ice', (data) => {
-    const toId = String((data && data.toId) || '');
-    const peer = io.sockets.sockets.get(toId);
-    if (peer && peer.connected) peer.emit('rtc_ice', { fromId: socket.id, candidate: data && data.candidate });
-  });
+  // SDP / ICE 转发（校验收发双方在同一个房间，防跨房间注入）
+  function relayRTC(evt, peerEvt) {
+    socket.on(evt, (data) => {
+      const toId = String((data && data.toId) || '');
+      const roomId = String((data && data.roomId) || '');
+      if (!toId || !roomId) return;
+      if (memberRooms.get(socket.id) !== roomId || memberRooms.get(toId) !== roomId) return;
+      const peer = io.sockets.sockets.get(toId);
+      if (peer && peer.connected) {
+        peer.emit(peerEvt, { fromId: socket.id, roomId, sdp: data && data.sdp, candidate: data && data.candidate });
+      }
+    });
+  }
+  relayRTC('rtc_offer', 'rtc_offer');
+  relayRTC('rtc_answer', 'rtc_answer');
+  relayRTC('rtc_ice', 'rtc_ice');
 
   // ---------- 实时白板 ----------
 
@@ -918,16 +981,8 @@ io.on('connection', (socket) => {
 
   // 断线
   socket.on('disconnect', () => {
-    // 通话方离线 → 通知对方通话结束
-    const callRel = activeCalls.get(socket.id);
-    if (callRel) {
-      const peer = io.sockets.sockets.get(callRel.peerId);
-      if (peer && peer.connected) {
-        peer.emit('call_ended', { fromId: socket.id, reason: 'offline' });
-      }
-      activeCalls.delete(socket.id);
-      activeCalls.delete(callRel.peerId);
-    }
+    // 通话中/振铃中离线 → 离开房间并通知他人
+    handleMemberLeave(socket.id, 'offline');
     onlineUsers.delete(socket.id);
     // 清理光标状态并通知他人移除
     cursorColors.delete(socket.id);

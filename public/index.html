@@ -42,8 +42,21 @@
         </button>
       </div>
       <aside class="sidebar">
-        <div class="sidebar-title">在线成员</div>
+        <div class="sidebar-head">
+          <div class="sidebar-title">在线成员</div>
+          <button class="group-call-btn" id="groupCallBtn" type="button" title="呼叫所有在线成员">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
+            </svg>
+            群呼
+          </button>
+        </div>
+        <div class="member-select-hint" id="memberSelectHint">点击成员名字可多选，然后发起通话</div>
         <ul class="member-list" id="memberList"></ul>
+        <div class="call-action-bar" id="callActionBar" hidden>
+          <button class="call-action-btn" id="callSelectedBtn" type="button">发起通话 (0)</button>
+          <button class="call-action-clear" id="callSelectionClearBtn" type="button" title="取消选择">✕</button>
+        </div>
       </aside>
     </main>
 
@@ -207,10 +220,10 @@
         </svg>
       </div>
       <div class="call-title" id="callTitle">语音通话</div>
-      <div class="call-peer" id="callPeerName">—</div>
       <div class="call-status" id="callStatus">…</div>
+      <div class="call-members" id="callMembers"></div>
       <div class="call-timer" id="callTimer" hidden>00:00</div>
-      <audio id="callAudio" autoplay hidden></audio>
+      <div class="call-audios" id="callAudios"></div>
       <div class="call-btns">
         <button class="call-btn call-accept" id="callAcceptBtn" type="button" hidden>接听</button>
         <button class="call-btn call-reject" id="callRejectBtn" type="button" hidden>拒绝</button>

@@ -20,14 +20,20 @@
   // WebRTC 通话弹窗
   const callModal = document.getElementById('callModal');
   const callTitle = document.getElementById('callTitle');
-  const callPeerName = document.getElementById('callPeerName');
   const callStatus = document.getElementById('callStatus');
+  const callMembers = document.getElementById('callMembers');
   const callTimerEl = document.getElementById('callTimer');
-  const callAudio = document.getElementById('callAudio');
+  const callAudios = document.getElementById('callAudios');
   const callAcceptBtn = document.getElementById('callAcceptBtn');
   const callRejectBtn = document.getElementById('callRejectBtn');
   const callMuteBtn = document.getElementById('callMuteBtn');
   const callEndBtn = document.getElementById('callEndBtn');
+  // 多选呼叫
+  const groupCallBtn = document.getElementById('groupCallBtn');
+  const memberSelectHint = document.getElementById('memberSelectHint');
+  const callActionBar = document.getElementById('callActionBar');
+  const callSelectedBtn = document.getElementById('callSelectedBtn');
+  const callSelectionClearBtn = document.getElementById('callSelectionClearBtn');
 
   const NICK_STORAGE_KEY = 'localsend-nickname';
   let myNickname = '';
@@ -192,15 +198,17 @@
     playPing();
   }
 
-  // ---------- WebRTC 语音通话 ----------
+  // ---------- 多方语音通话（WebRTC Mesh 房间模型） ----------
   // 状态机：idle → ringing(主叫等待) / incoming(被叫来电) → active(通话中) → idle
+  // Mesh：每个成员与房间内其他每位成员各建一条 RTCPeerConnection（peers: Map<peerId, pc>）
   let callState = 'idle';
-  let callId = '';
-  let peerId = '';
-  let peerName = '';
-  let pc = null;
+  let roomId = '';
+  let myRole = '';          // 'caller' | 'callee'
+  let callerId = '';        // 房间发起者 socket id
+  let roster = [];          // [{id, nickname}] 已接通成员（含自己）
+  let ringingTargets = [];  // 主叫侧：仍待接听的 [{id, nickname}]
+  let peers = new Map();    // peerId -> RTCPeerConnection
   let localStream = null;
-  let pendingOffer = null;   // 被叫在点击接听前收到的 offer 暂存
   let callTimer = null;
   let callSec = 0;
   let ringCtx = null;
@@ -234,12 +242,30 @@
     callStatus.hidden = false;
     callStatus.textContent = '';
     callTitle.textContent = '语音通话';
-    callPeerName.textContent = '—';
+    callMembers.innerHTML = '';
   }
 
-  function setCallUI(state, peer) {
+  // 渲染房间成员 chips（已接通 + 主叫侧仍在振铃的）
+  function renderCallMembers() {
+    callMembers.innerHTML = '';
+    roster.forEach((m) => {
+      const chip = document.createElement('span');
+      chip.className = 'call-chip' + (m.id === myId ? ' me' : '');
+      chip.textContent = m.nickname;
+      callMembers.appendChild(chip);
+    });
+    ringingTargets.forEach((t) => {
+      if (!roster.some((m) => m.id === t.id)) {
+        const chip = document.createElement('span');
+        chip.className = 'call-chip ringing';
+        chip.textContent = t.nickname + '…';
+        callMembers.appendChild(chip);
+      }
+    });
+  }
+
+  function setCallUI(state) {
     showCallModal();
-    callPeerName.textContent = peer || '—';
     callAcceptBtn.hidden = !(state === 'incoming');
     callRejectBtn.hidden = !(state === 'incoming');
     callMuteBtn.hidden = !(state === 'active');
@@ -248,17 +274,20 @@
     callEndBtn.textContent = (state === 'ringing') ? '取消' : '挂断';
     if (state === 'ringing') {
       callTitle.textContent = '正在呼叫…';
-      callStatus.textContent = '等待对方接听';
+      callStatus.textContent = '等待接听';
       callStatus.hidden = false;
     } else if (state === 'incoming') {
+      const who = roster[0] ? roster[0].nickname : '';
+      const group = ringingTargets.length > 1;
       callTitle.textContent = '来电';
-      callStatus.textContent = '邀请你语音通话';
+      callStatus.textContent = (group ? `${who} 邀请你加入群聊通话` : `${who} 邀请你语音通话`);
       callStatus.hidden = false;
     } else if (state === 'active') {
-      callTitle.textContent = '通话中';
+      callTitle.textContent = roster.length > 2 ? `通话中 (${roster.length} 人)` : '通话中';
       callStatus.hidden = true;
       callTimerEl.hidden = false;
     }
+    renderCallMembers();
   }
 
   function startCallTimer() {
@@ -284,7 +313,6 @@
       if (!AC) return;
       if (!ringCtx) ringCtx = new AC();
       if (ringCtx.state === 'suspended') ringCtx.resume();
-      let step = 0;
       ringTimer = setInterval(() => {
         const t0 = ringCtx.currentTime;
         [880, 1174].forEach((freq, i) => {
@@ -300,7 +328,6 @@
           osc.start(tt);
           osc.stop(tt + 0.24);
         });
-        step++;
       }, 1400);
     } catch (_) { /* 忽略铃声失败 */ }
   }
@@ -310,62 +337,71 @@
     ringTimer = null;
   }
 
-  // ---------- RTCPeerConnection 封装 ----------
-  function createPeer() {
-    const p = new RTCPeerConnection(RTC_CONFIG);
-    // 本地媒体轨加入连接
-    if (localStream) {
-      localStream.getTracks().forEach((t) => p.addTrack(t, localStream));
-    }
-    // 收到远端音频
+  // ---------- RTCPeerConnection 管理（每对端一条） ----------
+  function ensurePeer(peerId) {
+    let p = peers.get(peerId);
+    if (p) return p;
+    p = new RTCPeerConnection(RTC_CONFIG);
+    if (localStream) localStream.getTracks().forEach((t) => p.addTrack(t, localStream));
+    // 每路远端音频一个独立 audio 元素（Mesh 多路同时播放）
+    const audioEl = document.createElement('audio');
+    audioEl.autoplay = true;
+    audioEl.hidden = true;
+    audioEl.dataset.peer = peerId;
+    callAudios.appendChild(audioEl);
     p.ontrack = (e) => {
       if (e.streams && e.streams[0]) {
-        callAudio.srcObject = e.streams[0];
-        callAudio.hidden = false;
-        callAudio.play().catch(() => {});
+        audioEl.srcObject = e.streams[0];
+        audioEl.hidden = false;
+        audioEl.play().catch(() => {});
       }
     };
-    // 收集 ICE 候选并转发
     p.onicecandidate = (e) => {
-      if (e.candidate && peerId && callState === 'active') {
-        socket.emit('rtc_ice', { toId: peerId, candidate: e.candidate });
+      if (e.candidate && callState === 'active' && roomId) {
+        socket.emit('rtc_ice', { toId: peerId, roomId, candidate: e.candidate });
       }
     };
     p.onconnectionstatechange = () => {
-      if (p.connectionState === 'failed' || p.connectionState === 'closed') {
-        // 连接失败/断开 → 结束通话（避免双方都发 call_end 造成重复，由一端清理）
-        if (callState === 'active') {
-          socket.emit('call_end', { toId: peerId });
-          cleanupCall('连接已断开');
-        }
+      if (p.connectionState === 'failed' || p.connectionState === 'disconnected') {
+        // 单路连接失败：只移除这一路，不结束整个通话
+        removePeer(peerId);
       }
     };
+    peers.set(peerId, p);
     return p;
   }
 
-  function closePeer() {
-    if (pc) {
-      try { pc.onicecandidate = null; pc.ontrack = null; pc.onconnectionstatechange = null; } catch (_) {}
-      try { pc.close(); } catch (_) {}
-      pc = null;
+  function removePeer(peerId) {
+    const p = peers.get(peerId);
+    if (p) {
+      try { p.onicecandidate = null; p.ontrack = null; p.onconnectionstatechange = null; } catch (_) {}
+      try { p.close(); } catch (_) {}
+      peers.delete(peerId);
     }
-    if (localStream) {
-      localStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
-      localStream = null;
-    }
-    callAudio.srcObject = null;
-    callAudio.hidden = true;
+    const audioEl = callAudios.querySelector(`audio[data-peer="${peerId}"]`);
+    if (audioEl) audioEl.remove();
+  }
+
+  function closeAllPeers() {
+    for (const id of Array.from(peers.keys())) removePeer(id);
+    peers.clear();
   }
 
   // 收尾：清理媒体/连接/UI/铃声，回到 idle
   function cleanupCall(message) {
     stopCallTimer();
     stopRingTone();
-    closePeer();
-    pendingOffer = null;
-    callId = '';
-    peerId = '';
-    peerName = '';
+    closeAllPeers();
+    if (localStream) {
+      localStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      localStream = null;
+    }
+    callAudios.innerHTML = '';
+    roomId = '';
+    callerId = '';
+    myRole = '';
+    roster = [];
+    ringingTargets = [];
     muted = false;
     callState = 'idle';
     hideCallModal();
@@ -384,15 +420,17 @@
   }
 
   // ---------- 对外动作 ----------
-  // 主叫：点击成员列表电话图标
-  async function startCall(target) {
+  // 主叫：对一批目标发起通话（1:1 即 targets=[1人]）
+  async function startCall(targets) {
     if (callState !== 'idle') return;
-    if (!target || !target.id || target.id === myId) return;
-    peerId = target.id;
-    peerName = target.nickname || '对方';
-    callId = '';
+    const list = (targets || []).filter((t) => t && t.id && t.id !== myId);
+    if (!list.length) return;
+    myRole = 'caller';
+    callerId = myId;
+    roster = [{ id: myId, nickname: myNickname }];
+    ringingTargets = list.map((t) => ({ id: t.id, nickname: t.nickname || '对方' }));
     callState = 'ringing';
-    setCallUI('ringing', peerName);
+    setCallUI('ringing');
     startRingTone();
     try {
       localStream = await getMic();
@@ -400,60 +438,34 @@
       failCall('无法获取麦克风权限，请检查浏览器设置');
       return;
     }
-    pc = createPeer();
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-    } catch (_) {
-      failCall('创建通话失败');
-      return;
-    }
-    // 通知服务器发起呼叫（offer 在对方接听前就已发出，被叫端会暂存）
-    socket.emit('call_user', { targetId: target.id });
-    socket.emit('rtc_offer', { toId: target.id, sdp: pc.localDescription });
+    socket.emit('call_user', { targets: list.map((t) => t.id) });
   }
 
-  // 被叫：接听
+  // 被叫：接听（接听后作为新成员向既有成员发 offer）
   async function acceptCall() {
     if (callState !== 'incoming') return;
     stopRingTone();
-    callState = 'active';
-    setCallUI('active', peerName);
     try {
       localStream = await getMic();
     } catch (_) {
-      socket.emit('call_reject', { callId, fromId: peerId });
+      socket.emit('call_reject', { roomId });
       failCall('无法获取麦克风权限，已拒绝通话');
       return;
     }
-    pc = createPeer();
-    if (pendingOffer) {
-      try {
-        await pc.setRemoteDescription(pendingOffer);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit('rtc_answer', { toId: peerId, sdp: pc.localDescription });
-      } catch (_) {
-        socket.emit('call_end', { toId: peerId });
-        failCall('通话建立失败');
-        return;
-      }
-    }
-    pendingOffer = null;
-    socket.emit('call_accept', { callId, fromId: peerId });
+    callState = 'active';
+    socket.emit('call_accept', { roomId });
     startCallTimer();
   }
 
   // 被叫：拒绝
   function rejectCall() {
     if (callState !== 'incoming') return;
-    socket.emit('call_reject', { callId, fromId: peerId });
+    socket.emit('call_reject', { roomId });
     stopRingTone();
     hideCallModal();
     callState = 'idle';
-    pendingOffer = null;
-    peerId = '';
-    peerName = '';
+    roster = [];
+    ringingTargets = [];
   }
 
   // 静音切换
@@ -464,70 +476,122 @@
     callMuteBtn.textContent = muted ? '取消静音' : '静音';
   }
 
-  // 挂断 / 取消
+  // 挂断 / 取消（房间模型统一走 call_end）
   function endCall() {
     if (callState === 'idle') return;
-    if (callState === 'ringing') {
-      socket.emit('call_cancel', { callId, toId: peerId });
-    } else if (callState === 'incoming') {
-      rejectCall();
-      return;
-    } else if (callState === 'active') {
-      socket.emit('call_end', { toId: peerId });
-    }
+    if (callState === 'incoming') { rejectCall(); return; }
+    if (roomId) socket.emit('call_end', { roomId });
     cleanupCall();
   }
 
   // ---------- 信令监听 ----------
   socket.on('incoming_call', (data) => {
     if (callState !== 'idle') {
-      // 忙线：直接拒绝
-      socket.emit('call_reject', { callId: data.callId, fromId: data.fromId });
+      // 忙线：直接拒绝（正常不会发生，服务端已过滤；防竞态）
+      socket.emit('call_reject', { roomId: data.roomId });
       return;
     }
-    callId = data.callId || '';
-    peerId = data.fromId;
-    peerName = data.fromName || '对方';
-    pendingOffer = null;
+    roomId = data.roomId || '';
+    callerId = data.fromId || '';
+    myRole = 'callee';
+    roster = (data.roster && data.roster.length ? data.roster : [{ id: data.fromId, nickname: data.fromName }]);
+    ringingTargets = data.targets || [];
     callState = 'incoming';
-    setCallUI('incoming', peerName);
+    setCallUI('incoming');
     startRingTone();
-    // 页面在后台也提醒（铃声已响；再补一个系统通知）
+    // 页面在后台也提醒
     if (document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
       try {
-        const n = new Notification(`${peerName} 邀请你语音通话`, { body: '点击接听', icon: drawFavicon(0), tag: 'call' });
+        const who = roster[0] ? roster[0].nickname : '';
+        const group = ringingTargets.length > 1;
+        const n = new Notification(`${who} ${group ? '邀请你加入群聊通话' : '邀请你语音通话'}`, { body: '点击接听', icon: drawFavicon(0), tag: 'call' });
         n.onclick = () => { window.focus(); };
       } catch (_) {}
     }
   });
 
   socket.on('call_ringing', (data) => {
-    // 主叫侧确认呼叫已发出（callId 回填）
-    callId = data.callId || callId;
-    peerName = data.toName || peerName;
-    setCallUI('ringing', peerName);
-  });
-
-  socket.on('call_accepted', (data) => {
     if (callState !== 'ringing') return;
-    callId = data.callId || callId;
-    peerName = data.toName || peerName;
-    callState = 'active';
-    stopRingTone();
-    setCallUI('active', peerName);
-    startCallTimer();
+    roomId = data.roomId || roomId;
+    if (Array.isArray(data.targets)) {
+      ringingTargets = data.targets.map((t) => ({ id: t.id, nickname: t.nickname || '对方' }));
+    }
+    setCallUI('ringing');
+    // 有忙线/离线目标 → 提示
+    const busyNames = (data.busy || []).map((b) => b.nickname).filter(Boolean);
+    const offlineNames = (data.offline || []).map((b) => b.nickname).filter(Boolean);
+    if (busyNames.length || offlineNames.length) {
+      const parts = [];
+      if (busyNames.length) parts.push(`${busyNames.join('、')} 忙线`);
+      if (offlineNames.length) parts.push(`${offlineNames.join('、')} 不在线`);
+      setHint('已跳过：' + parts.join('，'), '');
+    }
   });
 
-  socket.on('call_rejected', () => {
-    if (callState === 'ringing') failCall('对方拒绝了通话');
+  // 有人加入房间：更新名单；新成员（自己）向所有既有成员发 offer
+  socket.on('room_member_joined', async (data) => {
+    if (callState === 'idle' || data.roomId !== roomId) return;
+    const prevRoster = roster;
+    roster = (data.members || []).filter((m) => m);
+    const newMember = data.member;
+    const iAmNew = newMember && newMember.id === myId;
+    if (callState === 'ringing') {
+      // 主叫：第一个成员接听 → 通话开始
+      callState = 'active';
+      stopRingTone();
+      setCallUI('active');
+      startCallTimer();
+    } else {
+      setCallUI(callState);
+    }
+    if (iAmNew && localStream) {
+      // 新成员：主动向每个既有成员发 offer（避免 glare）
+      for (const m of roster) {
+        if (m.id === myId) continue;
+        try {
+          const p = ensurePeer(m.id);
+          const offer = await p.createOffer();
+          await p.setLocalDescription(offer);
+          socket.emit('rtc_offer', { toId: m.id, roomId, sdp: p.localDescription });
+        } catch (_) {}
+      }
+    }
+    // 主叫的振铃列表：移除已接听的人
+    if (myRole === 'caller' && iAmNew === false) {
+      ringingTargets = ringingTargets.filter((t) => t.id !== (newMember && newMember.id));
+    }
+    void prevRoster;
   });
 
-  socket.on('call_busy', () => {
-    if (callState === 'ringing') failCall('对方正在通话中，请稍后再试');
+  // 有人离开房间
+  socket.on('room_member_left', (data) => {
+    if (callState === 'idle' || data.roomId !== roomId) return;
+    const leaverId = data.memberId;
+    removePeer(leaverId);
+    roster = roster.filter((m) => m.id !== leaverId);
+    if (roster.length <= 1) {
+      // 只剩自己（或空了）→ 结束
+      cleanupCall(data.reason === 'offline' ? '对方已离线，通话结束' : '通话已结束');
+      return;
+    }
+    setCallUI('active');
+    if (data.memberName) setHint(`${data.memberName} 离开了通话`, 'success');
+  });
+
+  socket.on('call_rejected', (data) => {
+    if (callState === 'ringing') {
+      setHint(`${(data && data.memberName) || '有人'} 拒绝了通话`, '');
+      if (data && data.memberId) {
+        ringingTargets = ringingTargets.filter((t) => t.id !== data.memberId);
+        renderCallMembers();
+      }
+    }
   });
 
   socket.on('call_failed', (data) => {
-    if (callState === 'ringing') failCall((data && data.error) || '对方不在线');
+    if (callState === 'ringing' || callState === 'incoming') {
+      failCall((data && data.error) || '无法建立通话');
+    }
   });
 
   socket.on('call_cancelled', () => {
@@ -535,47 +599,38 @@
       stopRingTone();
       hideCallModal();
       callState = 'idle';
-      pendingOffer = null;
-      peerId = '';
-      peerName = '';
+      roster = [];
+      ringingTargets = [];
       setHint('对方已取消通话', 'success');
     }
   });
 
-  socket.on('call_ended', (data) => {
-    if (callState === 'active' || callState === 'ringing') {
-      cleanupCall(data && data.reason === 'offline' ? '对方已离线，通话结束' : '通话已结束');
-    }
-  });
-
   socket.on('rtc_offer', async (data) => {
-    if (data.fromId !== peerId) return;
-    if (callState === 'incoming') {
-      pendingOffer = data.sdp;
-      return;
-    }
-    if (callState === 'active' && pc && !pc.remoteDescription) {
-      try {
-        await pc.setRemoteDescription(data.sdp);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit('rtc_answer', { toId: peerId, sdp: pc.localDescription });
-      } catch (_) { /* 忽略 */ }
-    }
-  });
-
-  socket.on('rtc_answer', async (data) => {
-    if (data.fromId !== peerId || !pc || callState !== 'active') return;
+    if (callState === 'idle' || data.roomId !== roomId) return;
+    const fromId = data.fromId;
+    if (!fromId || fromId === myId) return;
     try {
-      if (!pc.remoteDescription) await pc.setRemoteDescription(data.sdp);
+      const p = ensurePeer(fromId);
+      if (p.remoteDescription) return; // 已有协商
+      await p.setRemoteDescription(data.sdp);
+      const answer = await p.createAnswer();
+      await p.setLocalDescription(answer);
+      socket.emit('rtc_answer', { toId: fromId, roomId, sdp: p.localDescription });
     } catch (_) { /* 忽略 */ }
   });
 
+  socket.on('rtc_answer', async (data) => {
+    if (callState === 'idle' || data.roomId !== roomId) return;
+    const p = peers.get(data.fromId);
+    if (!p || p.remoteDescription) return;
+    try { await p.setRemoteDescription(data.sdp); } catch (_) { /* 忽略 */ }
+  });
+
   socket.on('rtc_ice', async (data) => {
-    if (data.fromId !== peerId || !pc) return;
-    try {
-      await pc.addIceCandidate(data.candidate);
-    } catch (_) { /* 候选可能已过期 */ }
+    if (callState === 'idle' || data.roomId !== roomId) return;
+    const p = peers.get(data.fromId);
+    if (!p) return;
+    try { await p.addIceCandidate(data.candidate); } catch (_) { /* 候选可能已过期 */ }
   });
 
   // 按钮绑定
@@ -583,6 +638,13 @@
   callRejectBtn.addEventListener('click', rejectCall);
   callMuteBtn.addEventListener('click', toggleMute);
   callEndBtn.addEventListener('click', endCall);
+  groupCallBtn.addEventListener('click', groupCall);
+  callSelectedBtn.addEventListener('click', callSelected);
+  callSelectionClearBtn.addEventListener('click', () => {
+    selectedMembers.clear();
+    updateCallActionBar();
+    renderMembers(currentMembers);
+  });
 
   // 断线清理
   socket.on('disconnect', () => {
@@ -712,9 +774,29 @@
   }
 
   // ---------- 成员列表 ----------
+  const selectedMembers = new Set(); // 多选呼叫的成员 id
+  let currentMembers = [];           // 最新成员 [{id, nickname}] 缓存（群呼/所选呼叫用）
+
+  function updateCallActionBar() {
+    const n = selectedMembers.size;
+    if (n > 0) {
+      callActionBar.hidden = false;
+      callSelectedBtn.textContent = `发起通话 (${n})`;
+    } else {
+      callActionBar.hidden = true;
+    }
+  }
+
   function renderMembers(members) {
+    currentMembers = members;
     onlineCount.textContent = members.length;
     memberList.innerHTML = '';
+    // 清理已离线的选中项
+    const liveIds = new Set(members.map((m) => m && m.id).filter(Boolean));
+    for (const sid of Array.from(selectedMembers)) {
+      if (!liveIds.has(sid)) selectedMembers.delete(sid);
+    }
+    updateCallActionBar();
     if (!members.length) {
       const li = document.createElement('li');
       li.className = 'empty-members';
@@ -741,7 +823,16 @@
         me.textContent = '我';
         li.appendChild(me);
       } else if (id && id !== myId) {
-        // 语音通话按钮（不能呼叫自己）
+        // 点击名字多选（用于群呼）；hover 电话图标快速单呼
+        li.classList.add('selectable');
+        li.title = '点击名字可多选，然后发起通话';
+        if (selectedMembers.has(id)) li.classList.add('selected');
+        li.addEventListener('click', () => {
+          if (selectedMembers.has(id)) selectedMembers.delete(id);
+          else selectedMembers.add(id);
+          renderMembers(members);
+        });
+        // 语音通话按钮（快速单呼）
         const callBtn = document.createElement('button');
         callBtn.type = 'button';
         callBtn.className = 'member-call';
@@ -749,11 +840,34 @@
         callBtn.innerHTML =
           '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
           '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>';
-        callBtn.addEventListener('click', () => startCall({ id, nickname: name }));
+        callBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          startCall([{ id, nickname: name }]);
+        });
         li.appendChild(callBtn);
       }
       memberList.appendChild(li);
     });
+  }
+
+  // 群呼：呼叫所有在线成员（不含自己）
+  function groupCall() {
+    const list = currentMembers.filter((m) => m && m.id && m.id !== myId);
+    if (!list.length) {
+      setHint('当前没有可呼叫的在线成员', '');
+      return;
+    }
+    startCall(list);
+  }
+
+  // 多选呼叫：呼叫已选中的成员
+  function callSelected() {
+    const list = currentMembers.filter((m) => m && selectedMembers.has(m.id));
+    if (!list.length) return;
+    startCall(list);
+    selectedMembers.clear();
+    updateCallActionBar();
+    renderMembers(currentMembers);
   }
 
   // ---------- Socket 事件 ----------
