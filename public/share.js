@@ -90,17 +90,24 @@
     [createShareModal, pwdModal, manageShareModal].forEach(closeModal);
   });
 
-  // ---------- 视图切换 ----------
-  function switchView(view) {
-    const isChat = view === 'chat';
-    chatMain.hidden = !isChat;
-    inputbar.hidden = !isChat;
-    shareView.hidden = isChat;
-    tabChat.classList.toggle('active', isChat);
-    tabShare.classList.toggle('active', !isChat);
+  // ---------- 视图切换（Tab 注册制；whiteboard.js 也会注册自己的 Tab） ----------
+  const tabRegistry = new Map(); // name -> { btn, panels }
+  function switchView(name) {
+    for (const [n, t] of tabRegistry) {
+      const on = n === name;
+      t.btn.classList.toggle('active', on);
+      t.panels.forEach((p) => { p.hidden = !on; });
+    }
   }
-  tabChat.addEventListener('click', () => switchView('chat'));
-  tabShare.addEventListener('click', () => switchView('share'));
+  function registerTab(name, btn, panels) {
+    if (!btn || !panels) return;
+    tabRegistry.set(name, { btn, panels });
+    btn.addEventListener('click', () => switchView(name));
+  }
+  registerTab('chat', tabChat, [chatMain, inputbar]);
+  registerTab('share', tabShare, [shareView]);
+  window.chatApp.switchView = switchView;
+  window.chatApp.registerTab = registerTab;
 
   function showShareHome() {
     current = null;

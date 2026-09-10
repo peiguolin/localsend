@@ -1189,3 +1189,137 @@ body {
   white-space: nowrap;
   animation: fadeIn 0.15s ease;
 }
+
+/* ===== 实时白板 ===== */
+.board-main {
+  min-height: 0;
+}
+
+.board-panel {
+  padding: 12px;
+  gap: 10px;
+}
+
+.board-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.board-colors {
+  display: flex;
+  gap: 6px;
+}
+
+.board-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+.board-swatch:hover { transform: scale(1.12); }
+
+.board-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.board-color-input {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.board-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+.board-size-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.board-size-label input[type="range"] {
+  width: 110px;
+  accent-color: var(--accent);
+}
+
+.tool-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.board-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.board-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+#boardCanvas {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+@media (max-width: 720px) {
+  .board-hint { display: none; }
+  .board-size-label input[type="range"] { width: 70px; }
+}
+
+/* ===== 白板实时光标 ===== */
+.wb-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  pointer-events: none;
+  transition: transform 0.06s linear;
+  will-change: transform;
+}
+
+.wb-cursor svg {
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+
+.wb-cursor-name {
+  position: absolute;
+  left: 13px;
+  top: 15px;
+  background: var(--cc, #2563eb);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}

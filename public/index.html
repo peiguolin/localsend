@@ -16,6 +16,7 @@
         <nav class="tabs">
           <button class="tab active" id="tabChat" type="button">聊天</button>
           <button class="tab" id="tabShare" type="button">共享文件</button>
+          <button class="tab" id="tabBoard" type="button">白板</button>
         </nav>
         <span class="badge" id="connStatus">连接中…</span>
       </div>
@@ -91,6 +92,29 @@
         <div class="upload-hint" id="shareBrowserHint"></div>
       </div>
       <input type="file" id="shareUploadInput" hidden>
+    </main>
+
+    <!-- 实时白板面板 -->
+    <main class="main board-main" id="boardView" hidden>
+      <div class="share-panel board-panel">
+        <div class="board-toolbar">
+          <div class="board-colors" id="boardColors"></div>
+          <input type="color" class="board-color-input" id="boardColorPicker" value="#1f2328" title="自定义颜色">
+          <span class="board-sep"></span>
+          <label class="board-size-label" title="笔画粗细">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/></svg>
+            <input type="range" id="boardSize" min="1" max="30" value="4">
+          </label>
+          <span class="board-sep"></span>
+          <button class="tool-btn" id="boardEraser" type="button" title="橡皮擦">橡皮</button>
+          <button class="tool-btn" id="boardUndo" type="button" title="撤销我的最后一笔">撤销</button>
+          <button class="tool-btn danger" id="boardClear" type="button" title="清空整块白板（所有人同步）">清空</button>
+          <span class="board-hint">实时协作白板 · 所有人共用一块画布</span>
+        </div>
+        <div class="board-canvas-wrap" id="boardWrap">
+          <canvas id="boardCanvas"></canvas>
+        </div>
+      </div>
     </main>
 
     <!-- 底部输入区 -->
@@ -199,5 +223,6 @@
   <script src="/socket.io/socket.io.js"></script>
   <script src="client.js"></script>
   <script src="share.js"></script>
+  <script src="whiteboard.js"></script>
 </body>
 </html>

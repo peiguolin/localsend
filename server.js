@@ -547,6 +547,22 @@ function wbTrimHistory() {
   }
 }
 
+// ---------- 白板实时光标状态 ----------
+const cursorColors = new Map(); // socketId -> 分配的光标颜色
+const wbCursors = new Map();    // socketId -> {x, y}  最后上报的光标位置
+const CURSOR_PALETTE = ['#e11d48', '#d97706', '#059669', '#2563eb', '#7c3aed', '#db2777', '#0891b2', '#65a30d'];
+
+// 分配当前使用人数最少的颜色，尽量避免撞色
+function assignCursorColor() {
+  const counts = new Map(CURSOR_PALETTE.map((c) => [c, 0]));
+  for (const c of cursorColors.values()) counts.set(c, (counts.get(c) || 0) + 1);
+  let best = CURSOR_PALETTE[0];
+  for (const [c, n] of counts) {
+    if (n < counts.get(best)) best = c;
+  }
+  return best;
+}
+
 function randomNickname() {
   return `用户${Math.floor(1000 + Math.random() * 9000)}`;
 }
@@ -568,7 +584,9 @@ function broadcastMembers() {
 io.on('connection', (socket) => {
   let nickname = randomNickname();
   let lastRenameAt = 0;
+  let lastCursorRelay = 0;
   onlineUsers.set(socket.id, nickname);
+  cursorColors.set(socket.id, assignCursorColor());
 
   // 通知本人（id 用于 WebRTC 通话信令定位）
   socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size });
@@ -720,6 +738,100 @@ io.on('connection', (socket) => {
     if (peer && peer.connected) peer.emit('rtc_ice', { fromId: socket.id, candidate: data && data.candidate });
   });
 
+  // ---------- 实时白板 ----------
+
+  // 起笔：校验样式与首点后广播给其他人
+  socket.on('wb_begin', (data) => {
+    const id = String((data && data.id) || '').slice(0, 40);
+    if (!id) return;
+    const s = wbSanitizeStroke({ ...(data || {}), pts: [[data && data.x, data && data.y]] });
+    if (!s) return;
+    socket.broadcast.emit('wb_begin', {
+      id, author: nickname, color: s.color, size: s.size, tool: s.tool,
+      x: s.pts[0][0], y: s.pts[0][1]
+    });
+  });
+
+  // 笔迹点批量中继（不落历史，仅转发）
+  socket.on('wb_pts', (data) => {
+    const id = String((data && data.id) || '').slice(0, 40);
+    if (!id) return;
+    const pts = wbCleanPoints((data && data.pts) || [], 300);
+    if (!pts.length) return;
+    socket.broadcast.emit('wb_pts', { id, pts });
+  });
+
+  // 收笔：完整笔迹存历史（authorId 用于撤销），其他人收尾该活动笔迹
+  socket.on('wb_end', (data) => {
+    const id = String((data && data.id) || '').slice(0, 40);
+    if (!id) return;
+    const s = wbSanitizeStroke(data);
+    if (!s) return;
+    wbStrokes.push({ id, authorId: socket.id, author: nickname, ...s });
+    wbTotalPoints += s.pts.length;
+    wbTrimHistory();
+    socket.broadcast.emit('wb_end', { id, author: nickname });
+  });
+
+  // 后加入者拉取全量笔迹与在线光标
+  socket.on('wb_join', (cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    cb({
+      ok: true,
+      strokes: wbStrokes.map((s) => ({
+        id: s.id, author: s.author, color: s.color, size: s.size, tool: s.tool, pts: s.pts
+      })),
+      cursors: Array.from(wbCursors.entries())
+        .filter(([id]) => id !== socket.id)
+        .map(([id, p]) => ({
+          id,
+          nickname: onlineUsers.get(id) || '',
+          color: cursorColors.get(id) || '#2563eb',
+          x: p.x, y: p.y
+        }))
+    });
+  });
+
+  // 光标位置中继（15ms 限频防刷，广播给其他人）
+  socket.on('wb_cursor', (data) => {
+    const x = wbClamp01(data && data.x);
+    const y = wbClamp01(data && data.y);
+    if (x === null || y === null) return;
+    const now = Date.now();
+    if (now - lastCursorRelay < 15) return;
+    lastCursorRelay = now;
+    wbCursors.set(socket.id, { x, y });
+    socket.broadcast.emit('wb_cursor', {
+      id: socket.id, nickname, color: cursorColors.get(socket.id), x, y
+    });
+  });
+
+  // 主动离开白板/移出画布 → 摘除光标
+  socket.on('wb_cursor_leave', () => {
+    if (wbCursors.delete(socket.id)) {
+      socket.broadcast.emit('wb_cursor_leave', { id: socket.id });
+    }
+  });
+
+  // 撤销自己的最后一笔
+  socket.on('wb_undo', () => {
+    for (let i = wbStrokes.length - 1; i >= 0; i--) {
+      if (wbStrokes[i].authorId === socket.id) {
+        const [removed] = wbStrokes.splice(i, 1);
+        wbTotalPoints -= removed.pts.length;
+        io.emit('wb_remove', { id: removed.id, author: nickname });
+        return;
+      }
+    }
+  });
+
+  // 清空画布（所有人同步）
+  socket.on('wb_clear', () => {
+    wbStrokes.length = 0;
+    wbTotalPoints = 0;
+    io.emit('wb_clear', { author: nickname });
+  });
+
   // ---------- 文件夹共享 ----------
 
   // 注册共享（每人同时只能共享一个文件夹）
@@ -817,6 +929,11 @@ io.on('connection', (socket) => {
       activeCalls.delete(callRel.peerId);
     }
     onlineUsers.delete(socket.id);
+    // 清理光标状态并通知他人移除
+    cursorColors.delete(socket.id);
+    if (wbCursors.delete(socket.id)) {
+      io.emit('wb_cursor_leave', { id: socket.id });
+    }
     // 清理该连接的所有 token
     for (const [token, t] of shareTokens) {
       if (t.socketId === socket.id) shareTokens.delete(token);
