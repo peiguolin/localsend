@@ -40,6 +40,7 @@
   let myId = '';
   let nickEditing = false;
   let nickErrorTimer = null;
+  let latestMembers = []; // 最新成员列表（@ 自动补全数据源）
 
   // ---------- 工具函数 ----------
   function fmtTime(ts) {
@@ -138,7 +139,7 @@
     else if (data.type === 'file') body = '[文件] ' + (data.fileName || '');
     else body = data.text || '';
     try {
-      const n = new Notification(`${data.nickname} 发来消息`, {
+      const n = new Notification(data.mention ? `${data.nickname} 提到了你` : `${data.nickname} 发来消息`, {
         body: body.slice(0, 80),
         icon: drawFavicon(0),
         tag: 'chat-' + data.timestamp
@@ -171,6 +172,29 @@
     } catch (_) { /* 忽略音频失败 */ }
   }
 
+  // @提及提示音：三连高音上行，与普通消息双音区分
+  function playMentionPing() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      [988, 1319, 1568].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        const t0 = audioCtx.currentTime + i * 0.09;
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.14, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.2);
+      });
+    } catch (_) { /* 忽略音频失败 */ }
+  }
+
   // 页内"新消息"浮条
   function showUnreadPill() {
     unreadPillText.textContent = `${unreadCount} 条新消息`;
@@ -188,14 +212,17 @@
     hideUnreadPill();
   }
 
-  // 收到消息后的未读判定：自己的消息 / 页面有焦点都不计数
+  // 收到消息后的未读判定：自己的消息 / 页面有焦点都不计数；@提及时播放专属提示音
   function handleIncomingMessage(data) {
-    if (data.nickname === myNickname || document.hasFocus()) return;
+    if (data.nickname === myNickname) return;
+    const mentioned = (data.mentions || []).includes(myNickname);
+    if (mentioned) playMentionPing();
+    if (document.hasFocus()) return;
     unreadCount++;
     updateTabIndicator();
     if (!isNearBottom()) showUnreadPill();
-    if (document.visibilityState === 'hidden') notifyDesktop(data);
-    playPing();
+    if (document.visibilityState === 'hidden') notifyDesktop(mentioned ? { ...data, mention: true } : data);
+    if (!mentioned) playPing();
   }
 
   // ---------- 多方语音通话（WebRTC Mesh 房间模型） ----------
@@ -666,17 +693,97 @@
     appendMsg(div);
   }
 
+  // ---------- 消息存储（供引用/撤回/右键菜单定位） ----------
+  const msgStore = new Map(); // id -> 消息原始数据（含 recalled 标记）
+
+  // ---------- 消息内容渲染：```代码块 / `行内代码` / @提及（全程先转义再拼接，防 XSS） ----------
+  function highlightMentions(html, mentions) {
+    const nicks = (mentions || []).slice().sort((a, b) => b.length - a.length);
+    for (const nick of nicks) {
+      const target = '@' + escapeHtml(nick);
+      const cls = nick === myNickname ? 'mention mention-me' : 'mention';
+      html = html.split(target).join(`<span class="${cls}">${target}</span>`);
+    }
+    return html;
+  }
+
+  function renderContentHTML(text, data) {
+    const segs = [];
+    const fenceRe = /```(\w{0,20})\n?([\s\S]*?)```/g;
+    let last = 0;
+    let m;
+    while ((m = fenceRe.exec(text))) {
+      if (m.index > last) segs.push({ t: 'text', c: text.slice(last, m.index) });
+      segs.push({ t: 'code', lang: (m[1] || '').toLowerCase(), c: m[2].replace(/\n$/, '') });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) segs.push({ t: 'text', c: text.slice(last) });
+    return segs.map((seg) => {
+      if (seg.t === 'code') {
+        return `<div class="code-block"><div class="code-bar"><span class="code-lang">${escapeHtml(seg.lang || 'auto')}</span><button class="code-copy" type="button">复制</button></div><pre><code data-lang="${escapeHtml(seg.lang)}">${escapeHtml(seg.c)}</code></pre></div>`;
+      }
+      let html = escapeHtml(seg.c).replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
+      html = highlightMentions(html, data && data.mentions);
+      return html;
+    }).join('');
+  }
+
+  // 代码块语法高亮（hljs 输出自带转义，可安全 innerHTML）
+  function applyCodeHighlight(container) {
+    if (!window.hljs) return;
+    container.querySelectorAll('.code-block code').forEach((el) => {
+      const lang = el.dataset.lang;
+      const raw = el.textContent;
+      try {
+        if (lang && window.hljs.getLanguage(lang)) {
+          el.innerHTML = window.hljs.highlight(raw, { language: lang }).value;
+        } else {
+          const r = window.hljs.highlightAuto(raw);
+          el.innerHTML = r.value;
+          const label = el.closest('.code-block').querySelector('.code-lang');
+          if (label && r.language) label.textContent = r.language;
+        }
+      } catch (_) { /* 高亮失败保持纯文本 */ }
+    });
+  }
+
+  function renderQuoteBlock(quote) {
+    if (!quote) return '';
+    return `<div class="msg-quote" data-qid="${escapeHtml(quote.id)}" title="点击定位原消息">
+      <span class="msg-quote-nick">${escapeHtml(quote.nickname)}</span>
+      <span class="msg-quote-text">${escapeHtml(quote.text)}</span>
+    </div>`;
+  }
+
+  // 点击引用块 → 滚动定位原消息并闪烁
+  function scrollToMessage(mid) {
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!el) {
+      setHint('原消息不在当前会话中', 'error');
+      return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1200);
+  }
+
   function renderTextMsg(data) {
     const isSelf = data.nickname === myNickname;
+    const mentionedMe = !isSelf && (data.mentions || []).includes(myNickname);
     const div = document.createElement('div');
-    div.className = 'msg ' + (isSelf ? 'self' : 'other');
+    div.className = 'msg ' + (isSelf ? 'self' : 'other') + (mentionedMe ? ' mentioned' : '');
+    if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
         <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>
-      <div class="msg-bubble">${escapeHtml(data.text)}</div>
+      ${renderQuoteBlock(data.quote)}
+      <div class="msg-bubble">${renderContentHTML(data.text, data)}</div>
     `;
+    applyCodeHighlight(div);
+    const q = div.querySelector('.msg-quote');
+    if (q) q.addEventListener('click', () => scrollToMessage(q.dataset.qid));
     appendMsg(div);
   }
 
@@ -684,6 +791,7 @@
     const isSelf = data.nickname === myNickname;
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other');
+    if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
@@ -712,6 +820,7 @@
     const isSelf = data.nickname === myNickname;
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other');
+    if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
@@ -908,6 +1017,7 @@
   });
 
   socket.on('chat_message', (data) => {
+    if (data.id) msgStore.set(data.id, data);
     if (data.type === 'image') {
       renderImageMsg(data);
     } else if (data.type === 'file') {
@@ -919,6 +1029,7 @@
   });
 
   socket.on('members_update', (members) => {
+    latestMembers = Array.isArray(members) ? members : [];
     renderMembers(members);
   });
 
@@ -926,8 +1037,10 @@
   function sendMessage() {
     const text = msgInput.value.trim();
     if (!text) return;
-    socket.emit('chat_message', { text });
+    socket.emit('chat_message', { text, quoteId: quoting ? quoting.id : undefined });
     msgInput.value = '';
+    clearQuote();
+    closeAutocomplete();
     msgInput.focus();
     scrollToBottom(true);
     hideUnreadPill();
@@ -935,11 +1048,218 @@
 
   sendBtn.addEventListener('click', sendMessage);
   msgInput.addEventListener('keydown', (e) => {
+    // @ 补全打开时优先处理导航键
+    if (acOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); acMove(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); acMove(-1); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acSelect(); return; }
+      if (e.key === 'Escape') { closeAutocomplete(); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
   });
+
+  // ---------- 右键菜单（引用回复 / 复制文本 / 撤回） ----------
+  let ctxMenu = null;
+  function closeCtxMenu() {
+    if (ctxMenu) {
+      ctxMenu.remove();
+      ctxMenu = null;
+    }
+  }
+  document.addEventListener('click', closeCtxMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtxMenu(); });
+
+  chatArea.addEventListener('contextmenu', (e) => {
+    const msgEl = e.target.closest('.msg[data-mid]');
+    if (!msgEl) return;
+    const data = msgStore.get(msgEl.dataset.mid);
+    if (!data || data.recalled) return;
+    e.preventDefault();
+    openCtxMenu(e.clientX, e.clientY, data);
+  });
+
+  function openCtxMenu(x, y, data) {
+    closeCtxMenu();
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    const items = [{ label: '引用回复', fn: () => startQuote(data) }];
+    if (data.type === 'text') {
+      items.push({ label: '复制文本', fn: () => copyText(data.text) });
+    }
+    if (data.nickname === myNickname && Date.now() - data.timestamp < 120000) {
+      items.push({ label: '撤回', danger: true, fn: () => recallMessage(data.id) });
+    }
+    for (const it of items) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ctx-item' + (it.danger ? ' danger' : '');
+      b.textContent = it.label;
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        it.fn();
+        closeCtxMenu();
+      });
+      menu.appendChild(b);
+    }
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
+    ctxMenu = menu;
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => setHint('已复制', 'success'),
+        () => setHint('复制失败', 'error')
+      );
+    } else {
+      setHint('复制失败', 'error');
+    }
+  }
+
+  // 代码块复制按钮（事件委托，后续消息同样生效）
+  chatArea.addEventListener('click', (e) => {
+    const btn = e.target.closest('.code-copy');
+    if (!btn) return;
+    const code = btn.closest('.code-block').querySelector('code');
+    if (!code) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        btn.textContent = '已复制 ✓';
+        setTimeout(() => { btn.textContent = '复制'; }, 1500);
+      }, () => setHint('复制失败', 'error'));
+    }
+  });
+
+  // ---------- 引用回复（输入栏预览条） ----------
+  let quoting = null; // {id, nickname, text}
+  const quotePreview = document.getElementById('quotePreview');
+
+  function startQuote(data) {
+    let text = data.text || '';
+    if (data.type === 'file') text = `[文件] ${data.fileName || ''}`;
+    else if (data.type === 'image') text = `[图片] ${data.fileName || ''}`;
+    text = text.replace(/\s+/g, ' ').trim().slice(0, 80);
+    quoting = { id: data.id, nickname: data.nickname, text };
+    quotePreview.innerHTML = `
+      <span class="quote-preview-label">回复 ${escapeHtml(quoting.nickname)}:</span>
+      <span class="quote-preview-text">${escapeHtml(quoting.text)}</span>
+      <button class="quote-preview-x" type="button" title="取消引用">×</button>
+    `;
+    quotePreview.hidden = false;
+    quotePreview.querySelector('.quote-preview-x').addEventListener('click', clearQuote);
+    msgInput.focus();
+  }
+
+  function clearQuote() {
+    quoting = null;
+    quotePreview.hidden = true;
+    quotePreview.innerHTML = '';
+  }
+
+  // ---------- 撤回消息 ----------
+  function recallMessage(id) {
+    socket.emit('chat_recall', { id }, (res) => {
+      if (!res || !res.ok) setHint((res && res.error) || '撤回失败', 'error');
+    });
+  }
+
+  socket.on('chat_recall', (data) => {
+    if (!data) return;
+    const rec = msgStore.get(data.id);
+    if (rec) rec.recalled = true;
+    if (quoting && quoting.id === data.id) clearQuote();
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(data.id)}"]`);
+    if (el) {
+      const isSelf = data.nickname === myNickname;
+      el.className = 'msg system';
+      el.removeAttribute('data-mid');
+      el.innerHTML = `<div class="msg-bubble">${escapeHtml(isSelf ? '你' : data.nickname)} 撤回了一条消息</div>`;
+    }
+  });
+
+  // ---------- @ 自动补全 ----------
+  const acBox = document.createElement('div');
+  acBox.className = 'ac-box';
+  acBox.hidden = true;
+  document.querySelector('.inputbar').appendChild(acBox);
+  let acOpen = false;
+  let acItems = [];
+  let acIndex = 0;
+  let acTokenStart = -1;
+
+  function closeAutocomplete() {
+    acOpen = false;
+    acBox.hidden = true;
+    acItems = [];
+    acTokenStart = -1;
+  }
+
+  // 光标前最近一个 @token
+  function acDetect() {
+    const pos = msgInput.selectionStart;
+    const before = msgInput.value.slice(0, pos);
+    const m = before.match(/@([^\s@]{0,20})$/);
+    if (!m) return null;
+    return { start: pos - m[0].length, keyword: m[1] };
+  }
+
+  function acRefresh() {
+    const hit = acDetect();
+    if (!hit) {
+      closeAutocomplete();
+      return;
+    }
+    const kw = hit.keyword.toLowerCase();
+    acItems = latestMembers
+      .filter((m) => (m.nickname || m) !== myNickname)
+      .map((m) => m.nickname || m)
+      .filter((nick) => !kw || nick.toLowerCase().includes(kw))
+      .slice(0, 8);
+    if (!acItems.length) {
+      closeAutocomplete();
+      return;
+    }
+    acTokenStart = hit.start;
+    acOpen = true;
+    acIndex = 0;
+    acBox.innerHTML = acItems.map((nick, i) =>
+      `<div class="ac-item${i === acIndex ? ' active' : ''}" data-i="${i}">${escapeHtml(nick)}</div>`
+    ).join('');
+    acBox.hidden = false;
+    acBox.querySelectorAll('.ac-item').forEach((el) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // 保持输入框焦点
+        acIndex = Number(el.dataset.i);
+        acSelect();
+      });
+    });
+  }
+
+  function acMove(delta) {
+    acIndex = (acIndex + delta + acItems.length) % acItems.length;
+    acBox.querySelectorAll('.ac-item').forEach((el, i) => el.classList.toggle('active', i === acIndex));
+  }
+
+  function acSelect() {
+    const nick = acItems[acIndex];
+    if (!nick) return;
+    const pos = msgInput.selectionStart;
+    msgInput.value = msgInput.value.slice(0, acTokenStart) + '@' + nick + ' ' + msgInput.value.slice(pos);
+    const caret = acTokenStart + nick.length + 2;
+    msgInput.setSelectionRange(caret, caret);
+    closeAutocomplete();
+    msgInput.focus();
+  }
+
+  msgInput.addEventListener('input', acRefresh);
+  msgInput.addEventListener('click', acRefresh);
+  msgInput.addEventListener('blur', () => setTimeout(closeAutocomplete, 150));
 
   // ---------- 文件上传 ----------
   function uploadFile(file) {

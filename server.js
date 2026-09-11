@@ -189,18 +189,22 @@ app.post('/upload', upload.single('file'), (req, res) => {
   saveMeta(storedName, originalName, size);
 
   const nickname = (req.body && req.body.nickname) || '匿名';
-  const base = { nickname, fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now() };
+  const base = { id: nextMsgId(), nickname, fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now() };
 
   // 图片文件：广播 type:'image' 并带上预览地址，前端直接渲染在线预览
   const mime = detectImageMime(storedName, req.file.path);
   if (mime) {
     const imageUrl = `/images/${encodeURIComponent(storedName)}`;
-    io.emit('chat_message', { ...base, type: 'image', imageUrl });
+    const msg = { ...base, type: 'image', imageUrl };
+    chatLogPush(msg);
+    io.emit('chat_message', msg);
     return res.json({ ok: true, ...base, type: 'image', imageUrl });
   }
 
   // 其余文件保持原文件卡片行为
-  io.emit('chat_message', { ...base, type: 'file' });
+  const msg = { ...base, type: 'file' };
+  chatLogPush(msg);
+  io.emit('chat_message', msg);
   res.json({ ok: true, ...base, type: 'file' });
 });
 
@@ -592,6 +596,59 @@ function hasControlChars(s) {
   return false;
 }
 
+// ---------- 聊天消息流水（供撤回/引用定位；内存保存，封顶丢最旧） ----------
+const chatLog = []; // {id, nickname, senderId, type, text|fileName, timestamp, recalled, ...}
+const CHAT_LOG_MAX = 500;
+const RECALL_WINDOW = 2 * 60 * 1000; // 撤回时限 2 分钟
+let chatMsgSeq = 0;
+
+function nextMsgId() {
+  return `m${Date.now().toString(36)}${(chatMsgSeq++).toString(36)}`;
+}
+
+function chatLogPush(msg) {
+  chatLog.push(msg);
+  if (chatLog.length > CHAT_LOG_MAX) chatLog.shift();
+  return msg;
+}
+
+function chatLogFind(id) {
+  for (let i = chatLog.length - 1; i >= 0; i--) {
+    if (chatLog[i].id === id) return chatLog[i];
+  }
+  return null;
+}
+
+// 引用快照：文本截断 80 字；文件/图片用占位描述；已撤回消息不可引用
+function quoteSnapshot(msg) {
+  if (!msg || msg.recalled) return null;
+  let text = msg.text || '';
+  if (msg.type === 'file') text = `[文件] ${msg.fileName || ''}`;
+  else if (msg.type === 'image') text = `[图片] ${msg.fileName || ''}`;
+  text = text.replace(/\s+/g, ' ').trim();
+  if (text.length > 80) text = text.slice(0, 80) + '…';
+  return { id: msg.id, nickname: msg.nickname, text };
+}
+
+// @提及解析：在线昵称最长匹配优先；昵称右侧需为边界（非中英文数字连字符或结尾）
+function parseMentions(text) {
+  const nicks = Array.from(new Set(onlineUsers.values())).sort((a, b) => b.length - a.length);
+  const found = new Set();
+  for (const nick of nicks) {
+    const needle = '@' + nick;
+    let idx = 0;
+    while ((idx = text.indexOf(needle, idx)) !== -1) {
+      const after = text[idx + needle.length];
+      if (after === undefined || !/[\w一-龥-]/.test(after)) {
+        found.add(nick);
+        break;
+      }
+      idx += needle.length;
+    }
+  }
+  return Array.from(found);
+}
+
 function broadcastMembers() {
   const members = Array.from(onlineUsers.entries()).map(([id, nickname]) => ({ id, nickname }));
   io.emit('members_update', members);
@@ -622,16 +679,39 @@ io.on('connection', (socket) => {
   });
   broadcastMembers();
 
-  // 聊天消息
+  // 聊天消息（带消息 ID/@提及解析/引用快照，入流水供撤回）
   socket.on('chat_message', (data) => {
     const text = String((data && data.text) || '').trim();
     if (!text || text.length > 5000) return;
-    io.emit('chat_message', {
+    const msg = {
+      id: nextMsgId(),
       type: 'text',
+      senderId: socket.id,
       nickname,
       text,
+      mentions: parseMentions(text),
       timestamp: Date.now()
-    });
+    };
+    const quoteId = String((data && data.quoteId) || '');
+    if (quoteId) {
+      const q = quoteSnapshot(chatLogFind(quoteId));
+      if (q) msg.quote = q;
+    }
+    chatLogPush(msg);
+    io.emit('chat_message', msg);
+  });
+
+  // 撤回消息（仅本人 + 2 分钟内，广播全员移除）
+  socket.on('chat_recall', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    const id = String((data && data.id) || '');
+    const msg = chatLogFind(id);
+    if (!msg || msg.recalled) return cb({ ok: false, error: '消息不存在或已被撤回' });
+    if (msg.nickname !== nickname) return cb({ ok: false, error: '只能撤回自己的消息' });
+    if (Date.now() - msg.timestamp > RECALL_WINDOW) return cb({ ok: false, error: '超过 2 分钟，无法撤回' });
+    msg.recalled = true;
+    io.emit('chat_recall', { id: msg.id, nickname, timestamp: Date.now() });
+    cb({ ok: true });
   });
 
   // 修改昵称（全站唯一、1~20 字符、2 秒限速；silent 时不广播系统消息）

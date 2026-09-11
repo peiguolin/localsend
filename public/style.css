@@ -17,6 +17,8 @@
   --accent-soft: rgba(79, 110, 247, 0.08);
   --success: #16a34a;
   --danger: #dc2626;
+  --code-bg: #f5f6f8;
+  --code-border: #e5e7eb;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
 }
 
@@ -1499,6 +1501,8 @@ html[data-theme='dark'] {
   --accent-soft: rgba(107, 133, 255, 0.16);
   --success: #22c55e;
   --danger: #f05656;
+  --code-bg: #1a1e26;
+  --code-border: #2a2f39;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
@@ -1602,4 +1606,259 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
 
 @media (max-width: 720px) {
   .screen-toolbar { gap: 8px; }
+}
+
+/* ===== @提及高亮 ===== */
+.mention {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 3px;
+  font-weight: 600;
+}
+
+.mention-me {
+  color: #fff;
+  background: var(--accent);
+}
+
+.msg.self .mention {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.msg.self .mention-me {
+  color: var(--accent);
+  background: #fff;
+}
+
+/* 被 @ 的消息整泡高亮 */
+.msg.mentioned .msg-bubble {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 12px var(--accent-soft);
+}
+
+/* 引用定位闪烁 */
+.msg.flash .msg-bubble {
+  animation: quoteFlash 1.2s ease;
+}
+
+@keyframes quoteFlash {
+  0%, 100% { box-shadow: none; }
+  25%, 60% { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 16px var(--accent); }
+}
+
+/* ===== 引用块 ===== */
+.msg-quote {
+  display: flex;
+  gap: 6px;
+  max-width: 100%;
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.msg-quote:hover { filter: brightness(0.97); }
+
+.msg-quote-nick {
+  font-weight: 650;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.msg-quote-text {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 输入栏引用预览条 ===== */
+.quote-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  font-size: 12.5px;
+}
+
+.quote-preview-label {
+  font-weight: 650;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.quote-preview-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-preview-x {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.quote-preview-x:hover { color: var(--danger); }
+
+/* ===== 右键菜单 ===== */
+.ctx-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 120px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(16, 24, 40, 0.18);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn 0.12s ease;
+}
+
+.ctx-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.ctx-item:hover { background: var(--accent-soft); color: var(--accent); }
+.ctx-item.danger:hover { background: rgba(220, 38, 38, 0.08); color: var(--danger); }
+
+/* ===== 代码块（高亮主题走 CSS 变量，深浅色自动适配） ===== */
+.code-block {
+  margin: 6px 0 2px;
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+  background: var(--code-bg);
+  overflow: hidden;
+  min-width: 260px;
+  max-width: 640px;
+}
+
+.code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--code-border);
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.code-lang {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-faint);
+}
+
+.code-copy {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.code-copy:hover { background: var(--accent-soft); }
+
+.code-block pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.code-block code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  color: var(--text);
+  white-space: pre;
+}
+
+.msg.self .code-block {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.inline-code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.msg.self .inline-code {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+/* hljs 令牌配色（变量驱动，深浅色通用） */
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name { color: var(--accent); }
+.hljs-string, .hljs-attr, .hljs-symbol, .hljs-bullet { color: var(--success); }
+.hljs-comment, .hljs-quote { color: var(--text-faint); font-style: italic; }
+.hljs-number, .hljs-literal, .hljs-regexp { color: #f59e0b; }
+.hljs-title, .hljs-section, .hljs-title.function_ { color: #8b5cf6; }
+.hljs-type, .hljs-class, .hljs-title.class_ { color: #d97706; }
+.hljs-variable, .hljs-template-variable { color: var(--danger); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+
+/* ===== @ 自动补全 ===== */
+.inputbar { position: relative; }
+
+.ac-box {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 6px);
+  min-width: 180px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(16, 24, 40, 0.16);
+  padding: 5px;
+  z-index: 100;
+}
+
+.ac-item {
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ac-item.active, .ac-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
