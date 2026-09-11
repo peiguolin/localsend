@@ -1323,10 +1323,12 @@
     });
   });
 
-  // 成员列表点击已多选（供通话）；点「拉起群聊」时把已选成员带入群聊选择
-  roomCreateBtn.addEventListener('click', () => {
-    openGroupModal();
-  });
+  // 公共房（静态元素）一次性绑定点击切换；renderRoomList 只负责 active 态
+  const roomMainEl = document.getElementById('roomMain');
+  if (roomMainEl && !roomMainEl._roomClickBound) {
+    roomMainEl.addEventListener('click', () => switchRoom('main'));
+    roomMainEl._roomClickBound = true;
+  }
 
   // 更新房间标题栏在页面加载后
   window.addEventListener('load', updateRoomTitlebar);

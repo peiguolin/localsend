@@ -72,7 +72,15 @@ const documentStub = {
   },
   querySelector(sel) {
     if (sel === 'link[rel="icon"]') return null;
+    if (sel === '.room-titlebar .rt-name') return byId['roomTitleName'] || (byId['roomTitleName'] = makeEl('span'));
     return makeEl('div');
+  },
+  querySelectorAll(sel) {
+    if (sel === '.room-item') {
+      const list = byId['roomList'];
+      return list ? list.children.slice() : [];
+    }
+    return [];
   },
   createElement(tag) {
     if (tag === 'canvas') return { width: 0, height: 0, getContext: () => ctxStub, toDataURL: () => 'data:image/png;base64,AAAA' };
@@ -109,7 +117,7 @@ Object.defineProperty(global, 'navigator', { configurable: true, value: { mediaD
 require(path.join(__dirname, '..', 'public', 'client.js'));
 require(path.join(__dirname, '..', 'public', 'share.js'));
 
-const clickHandler = (el, evt) => (el._listeners && el._listeners[evt] || []).forEach((f) => f());
+const clickHandler = (el, evt, ev) => (el._listeners && el._listeners[evt] || []).forEach((f) => f(ev || {}));
 
 console.log('--- 准备：模拟在线成员列表 ---');
 // 先 welcome 设置 myId（myId 用于过滤"我"自己）
@@ -183,6 +191,42 @@ const createCall = ackCalls.find((a) => a.evt === 'group_create');
 assert(!!createCall, '发出 group_create');
 assert(createCall.data.targetIds.length === 2, 'targetIds 含 2 人（张三+王五）');
 assert(!createCall.data.targetIds.includes('srv-li'), '已移除的李四不在 targetIds');
+
+console.log('--- 创建成功 → 模拟收到 group_created ---');
+// 预置静态公共房项（真实 DOM 由 index.html 提供；桩里复用 byId['roomMain'] 模拟同源元素）
+const roomList = byId['roomList'];
+const roomMainStub = byId['roomMain'];
+roomMainStub.dataset.room = 'main';
+roomMainStub.className = 'room-item';
+roomList.appendChild(roomMainStub);
+// 公共房一次性点击绑定在模块加载时已执行（roomMain 桩元素），此处确认存在
+assert(roomMainStub._roomClickBound === true, '公共房项已绑定点击（模块加载时）');
+assert(roomMainStub._listeners && roomMainStub._listeners.click && roomMainStub._listeners.click.length > 0, '公共房项点击监听存在');
+// 服务端会回 group_created（带 room），触发 myRooms 更新 + renderRoomList
+socketHandlers.group_created({ room: { id: 'gtest1', name: '测试群', members: [{ clientId: 'cA', nickname: '我' }, { clientId: 'cB', nickname: '张三' }] } });
+const roomItems = roomList.children;
+const groupItem = roomItems.find((c) => (c.dataset && c.dataset.room === 'gtest1'));
+assert(!!groupItem, '群聊项渲染在房间列表');
+assert(roomItems.some((c) => (c.dataset && c.dataset.room === 'main')), '公共房项仍在列表首位');
+
+console.log('--- 点击群聊项 → 切换 ---');
+clickHandler(groupItem, 'click', { target: { closest: () => null } });
+// switchRoom 发 room_history
+const histCall = ackCalls.find((a) => a.evt === 'room_history' && a.data.room === 'gtest1');
+assert(!!histCall, '点击群聊项发起 room_history(gtest1)');
+// 回包加载历史
+histCall.cb({ ok: true, room: 'gtest1', history: [{ id: 'm1', type: 'text', nickname: '张三', text: '群聊消息', timestamp: 1700000000000, room: 'gtest1', clientId: 'cB' }] });
+const chatArea2 = byId['chatArea'];
+assert((chatArea2.children.map((c) => c._html || c._text || '').join('')).includes('群聊消息'), '群聊历史渲染');
+
+console.log('--- 点击公共房 → 切换回 main ---');
+const mainItem = roomItems.find((c) => (c.dataset && c.dataset.room === 'main'));
+assert(!!mainItem, '找到公共房项');
+assert(mainItem._listeners && mainItem._listeners.click && mainItem._listeners.click.length > 0, '公共房项绑定了点击事件');
+const mainCallsBefore = ackCalls.filter((a) => a.evt === 'room_history' && a.data.room === 'main').length;
+clickHandler(mainItem, 'click', { target: { closest: () => null } });
+const mainCallsAfter = ackCalls.filter((a) => a.evt === 'room_history' && a.data.room === 'main').length;
+assert(mainCallsAfter > mainCallsBefore, '点击公共房发起 room_history(main)（切换生效）');
 
 console.log(failures === 0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
 process.exit(failures === 0 ? 0 : 1);
