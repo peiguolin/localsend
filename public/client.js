@@ -1246,14 +1246,45 @@
   const groupConfirm = document.getElementById('groupConfirm');
   const groupTip = document.getElementById('groupTip');
   const roomCreateBtn = document.getElementById('roomCreateBtn');
+  const groupPickList = document.getElementById('groupPickList');
   let groupSel = new Map(); // socketId -> nickname
 
   function openGroupModal() {
+    // 把当前已在成员列表里勾选的人带入群聊选择（selectedMembers 是通话多选的同一批）
     groupSel = new Map();
+    for (const m of currentMembers) {
+      if (m && selectedMembers.has(m.id)) groupSel.set(m.id, m.nickname);
+    }
     renderGroupSel();
     groupNameInput.value = '';
-    groupTip.textContent = '从右侧在线成员里多选，再点「创建群聊」';
+    groupTip.textContent = groupSel.size
+      ? `已带入 ${groupSel.size} 位已选成员，可移除或调整`
+      : '从在线成员列表里点击添加，再点「创建群聊」';
     groupModal.hidden = false;
+  }
+
+  // 弹窗内在线成员（排除自己与已选），点击添加进群聊
+  function renderGroupPick() {
+    groupPickList.innerHTML = '';
+    for (const m of currentMembers) {
+      if (!m || m.id === myId) continue;
+      if (groupSel.has(m.id)) continue;
+      const chip = document.createElement('span');
+      chip.className = 'group-pick-chip';
+      chip.textContent = m.nickname;
+      chip.addEventListener('click', () => {
+        groupSel.set(m.id, m.nickname);
+        renderGroupSel();
+        renderGroupPick();
+      });
+      groupPickList.appendChild(chip);
+    }
+    if (!groupPickList.children.length) {
+      const empty = document.createElement('span');
+      empty.className = 'group-pick-empty';
+      empty.textContent = '没有可添加的成员';
+      groupPickList.appendChild(empty);
+    }
   }
 
   function renderGroupSel() {
@@ -1266,10 +1297,12 @@
       chip.querySelector('.chip-remove').addEventListener('click', () => {
         groupSel.delete(sid);
         renderGroupSel();
+        renderGroupPick();
       });
       groupSelList.appendChild(chip);
     });
     groupConfirm.disabled = groupSel.size === 0;
+    renderGroupPick();
   }
 
   roomCreateBtn.addEventListener('click', openGroupModal);

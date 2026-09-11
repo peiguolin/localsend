@@ -2177,3 +2177,40 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
   font-size: 12px;
   color: var(--text-faint);
 }
+
+/* 群聊弹窗：在线成员选择 */
+.group-pick-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.group-pick-chip {
+  display: inline-flex;
+  align-items: center;
+  background: #f3f4f6;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all .12s;
+}
+
+.group-pick-chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.group-pick-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 4px 2px;
+}
