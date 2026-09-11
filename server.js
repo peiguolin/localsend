@@ -6,6 +6,7 @@ const express = require('express');
 const https = require('https');
 const { Server } = require('socket.io');
 const multer = require('multer');
+const store = require('./db.js');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -197,6 +198,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
     const imageUrl = `/images/${encodeURIComponent(storedName)}`;
     const msg = { ...base, type: 'image', imageUrl };
     chatLogPush(msg);
+    store.insertMessage(msg);
     io.emit('chat_message', msg);
     return res.json({ ok: true, ...base, type: 'image', imageUrl });
   }
@@ -204,6 +206,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
   // 其余文件保持原文件卡片行为
   const msg = { ...base, type: 'file' };
   chatLogPush(msg);
+  store.insertMessage(msg);
   io.emit('chat_message', msg);
   res.json({ ok: true, ...base, type: 'file' });
 });
@@ -220,6 +223,18 @@ app.use((err, req, res, next) => {
     return res.status(500).json({ ok: false, error: `服务器错误：${err.message}` });
   }
   next();
+});
+
+// ---------- 数据导出（下载 SQLite 库文件备份） ----------
+app.get('/data-export', (req, res) => {
+  try {
+    if (!fs.existsSync(store.DB_FILE)) return res.status(404).send('数据库文件不存在');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+    res.download(store.DB_FILE, `localsend-chat-${stamp}.db`);
+  } catch (e) {
+    res.status(500).send(`导出失败：${e.message}`);
+  }
 });
 
 // ---------- 下载（防路径穿越） ----------
@@ -661,8 +676,10 @@ io.on('connection', (socket) => {
   onlineUsers.set(socket.id, nickname);
   cursorColors.set(socket.id, assignCursorColor());
 
-  // 通知本人（id 用于 WebRTC 通话信令定位）
-  socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size });
+  // 通知本人（id 用于 WebRTC 通话信令定位）；附带最近历史消息
+  let history = [];
+  try { history = store.loadMessages(200, 'main'); } catch (_) { /* 历史不可用 */ }
+  socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size, history });
   // 推送当前共享列表
   socket.emit('shares_update', Array.from(shares.values()).map(publicShareInfo));
   // 推送当前屏幕共享状态
@@ -698,20 +715,80 @@ io.on('connection', (socket) => {
       if (q) msg.quote = q;
     }
     chatLogPush(msg);
+    store.insertMessage(msg);
+    store.trimMessages('main');
     io.emit('chat_message', msg);
   });
 
-  // 撤回消息（仅本人 + 2 分钟内，广播全员移除）
+  // 撤回消息（仅本人 + 2 分钟内，广播全员移除；内存/数据库联动）
   socket.on('chat_recall', (data, cb) => {
     cb = typeof cb === 'function' ? cb : () => {};
     const id = String((data && data.id) || '');
-    const msg = chatLogFind(id);
+    let msg = chatLogFind(id);
+    // 内存流水里没有（可能是历史消息）→ 查数据库
+    if (!msg) {
+      msg = store.getMessageById(id);
+    }
     if (!msg || msg.recalled) return cb({ ok: false, error: '消息不存在或已被撤回' });
     if (msg.nickname !== nickname) return cb({ ok: false, error: '只能撤回自己的消息' });
     if (Date.now() - msg.timestamp > RECALL_WINDOW) return cb({ ok: false, error: '超过 2 分钟，无法撤回' });
     msg.recalled = true;
+    store.recallMessage(id);
     io.emit('chat_recall', { id: msg.id, nickname, timestamp: Date.now() });
     cb({ ok: true });
+  });
+
+  // ---------- 数据面板（历史/搜索/统计/清空） ----------
+
+  // 搜索历史消息（关键词/昵称/时间范围）
+  socket.on('history_search', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    try {
+      const results = store.searchMessages({
+        keyword: String((data && data.keyword) || '').slice(0, 100) || null,
+        nickname: String((data && data.nickname) || '').slice(0, 20) || null,
+        from: data && data.from ? Number(data.from) : null,
+        to: data && data.to ? Number(data.to) : null,
+        room: 'main',
+        limit: Math.min(Number((data && data.limit) || 100), 500)
+      });
+      cb({ ok: true, results });
+    } catch (e) {
+      cb({ ok: false, error: e.message });
+    }
+  });
+
+  // 数据统计
+  socket.on('history_stats', (cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    try {
+      cb({ ok: true, ...store.stats('main') });
+    } catch (e) {
+      cb({ ok: false, error: e.message });
+    }
+  });
+
+  // 清空历史（消息；可选连带白板）
+  socket.on('history_clear', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    try {
+      const r = store.clearHistory('main', !!(data && data.includeStrokes));
+      chatLog.length = 0;
+      if (data && data.includeStrokes) {
+        wbStrokes.length = 0;
+        wbTotalPoints = 0;
+        io.emit('wb_clear', { author: nickname });
+      }
+      cb({ ok: true, ...r });
+      io.emit('system_message', {
+        type: 'clear',
+        nickname,
+        text: `${nickname} 清空了聊天历史${data && data.includeStrokes ? '与白板' : ''}`,
+        timestamp: Date.now()
+      });
+    } catch (e) {
+      cb({ ok: false, error: e.message });
+    }
   });
 
   // 修改昵称（全站唯一、1~20 字符、2 秒限速；silent 时不广播系统消息）
@@ -925,15 +1002,25 @@ io.on('connection', (socket) => {
     if (!id) return;
     const s = wbSanitizeStroke(data);
     if (!s) return;
-    wbStrokes.push({ id, authorId: socket.id, author: nickname, ...s });
+    const stroke = { id, authorId: socket.id, author: nickname, ...s };
+    wbStrokes.push(stroke);
     wbTotalPoints += s.pts.length;
     wbTrimHistory();
+    store.insertStroke(stroke);
     socket.broadcast.emit('wb_end', { id, author: nickname });
   });
 
   // 后加入者拉取全量笔迹与在线光标
   socket.on('wb_join', (cb) => {
     cb = typeof cb === 'function' ? cb : () => {};
+    // 幂等恢复：把数据库笔迹合并进内存（按 id 去重，补上 authorId 用于撤销）
+    if (wbStrokes.length === 0) {
+      const saved = store.loadStrokes('main');
+      for (const s of saved) {
+        wbStrokes.push({ ...s, authorId: null }); // authorId 服务重启后无法还原，撤销仅对本次会话有效
+        wbTotalPoints += s.pts.length;
+      }
+    }
     cb({
       ok: true,
       strokes: wbStrokes.map((s) => ({
@@ -977,6 +1064,7 @@ io.on('connection', (socket) => {
       if (wbStrokes[i].authorId === socket.id) {
         const [removed] = wbStrokes.splice(i, 1);
         wbTotalPoints -= removed.pts.length;
+        store.removeStrokeByAuthor(socket.id);
         io.emit('wb_remove', { id: removed.id, author: nickname });
         return;
       }
@@ -987,6 +1075,7 @@ io.on('connection', (socket) => {
   socket.on('wb_clear', () => {
     wbStrokes.length = 0;
     wbTotalPoints = 0;
+    store.clearStrokes('main');
     io.emit('wb_clear', { author: nickname });
   });
 
@@ -1223,6 +1312,14 @@ function getLanIPs() {
     }
   }
   return result;
+}
+
+// 数据持久化：启动时自动建库（data/chat.db），失败不阻塞服务
+try {
+  store.init();
+  console.log('  数据持久化: 已连接 SQLite (' + store.DB_FILE + ')');
+} catch (e) {
+  console.warn('  数据持久化: SQLite 初始化失败，历史功能不可用 —', e.message);
 }
 
 server.listen(PORT, '0.0.0.0', () => {

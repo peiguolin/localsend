@@ -4,6 +4,12 @@ node_modules/
 # 运行时数据（上传文件与元数据，不进版本库）
 uploads/
 
+# SQLite 聊天历史数据库（含个人聊天记录，绝不提交）
+data/
+
+# 本地 npm 缓存（沙箱安装用）
+.test-tmp/npm-cache/
+
 # 自签名 HTTPS 证书（首次启动自动生成；私钥绝不提交）
 certs/
 
@@ -21,3 +27,8 @@ certs/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 测试用的独立 SQLite 库
+.test-tmp/*.db
+.test-tmp/*.db-wal
+.test-tmp/*.db-shm

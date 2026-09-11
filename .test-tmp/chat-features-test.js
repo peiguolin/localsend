@@ -55,7 +55,7 @@ function waitEvent(sock, event, timeout = 2000) {
 
 async function main() {
   const serverProc = spawn('node', [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, PORT: String(PORT), LOCALSEND_DB_FILE: path.join(__dirname, "test-chat.db") },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   await new Promise((resolve, reject) => {

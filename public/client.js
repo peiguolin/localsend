@@ -998,6 +998,25 @@
       text: `你已加入聊天室，你的昵称是 ${myNickname}`
     });
     onlineCount.textContent = data.online;
+    // 加载最近历史消息（SQLite 持久化）
+    if (Array.isArray(data.history) && data.history.length) {
+      const sep = document.createElement('div');
+      sep.className = 'msg system';
+      sep.innerHTML = `<div class="msg-bubble">—— 以下为最近 ${data.history.length} 条历史消息 ——</div>`;
+      appendMsg(sep);
+      data.history.forEach((m) => {
+        if (!m || m.recalled) return;
+        if (m.id) msgStore.set(m.id, m);
+        if (m.type === 'image') renderImageMsg(m);
+        else if (m.type === 'file') renderFileMsg(m);
+        else renderTextMsg(m);
+      });
+      const sepEnd = document.createElement('div');
+      sepEnd.className = 'msg system';
+      sepEnd.innerHTML = `<div class="msg-bubble">—— 历史消息结束 ——</div>`;
+      appendMsg(sepEnd);
+      scrollToBottom(false);
+    }
     // 恢复上次使用的昵称（静默改名，不广播系统消息；被占用则放弃）
     let saved = null;
     try { saved = localStorage.getItem(NICK_STORAGE_KEY); } catch (_) { /* ignore */ }

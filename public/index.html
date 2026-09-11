@@ -29,6 +29,7 @@
           <button class="tab" id="tabShare" type="button">共享文件</button>
           <button class="tab" id="tabBoard" type="button">白板</button>
           <button class="tab" id="tabScreen" type="button">屏幕共享</button>
+          <button class="tab" id="tabData" type="button">数据</button>
         </nav>
         <span class="badge" id="connStatus">连接中…</span>
       </div>
@@ -178,6 +179,41 @@
       </div>
     </main>
 
+    <!-- 数据面板（历史 / 搜索 / 统计） -->
+    <main class="main data-main" id="dataView" hidden>
+      <div class="share-panel data-panel">
+        <div class="data-header">
+          <span class="sidebar-title">数据面板</span>
+          <span class="data-db-path" id="dataDbPath"></span>
+        </div>
+
+        <div class="data-stats" id="dataStats">
+          <div class="stat-card"><div class="stat-num" id="statMessages">-</div><div class="stat-label">消息总数</div></div>
+          <div class="stat-card"><div class="stat-num" id="statFiles">-</div><div class="stat-label">文件/图片</div></div>
+          <div class="stat-card"><div class="stat-num" id="statStrokes">-</div><div class="stat-label">白板笔迹</div></div>
+          <div class="stat-card"><div class="stat-num" id="statDbSize">-</div><div class="stat-label">库文件大小</div></div>
+        </div>
+        <div class="data-range" id="dataRange">最早记录：— · 最新记录：—</div>
+
+        <div class="data-search">
+          <input class="data-search-input" id="dataSearchKeyword" type="text" placeholder="搜索关键词（消息内容 / 文件名）…">
+          <input class="data-search-input data-search-narrow" id="dataSearchNick" type="text" placeholder="按昵称筛选…">
+          <button class="tool-btn" id="dataSearchBtn" type="button">搜索</button>
+          <button class="tool-btn" id="dataSearchReset" type="button" hidden>重置</button>
+        </div>
+        <div class="data-search-meta" id="dataSearchMeta"></div>
+        <div class="data-results" id="dataResults">
+          <div class="data-empty">搜索历史消息，或查看下方统计。数据保存在宿主机 data/chat.db（SQLite）。</div>
+        </div>
+
+        <div class="data-actions">
+          <button class="share-primary-btn" id="dataExportBtn" type="button">导出备份（下载 chat.db）</button>
+          <button class="tool-btn danger" id="dataClearBtn" type="button">清空历史</button>
+        </div>
+        <div class="upload-hint" id="dataHint"></div>
+      </div>
+    </main>
+
     <!-- 底部输入区 -->
     <footer class="inputbar">
       <div class="quote-preview" id="quotePreview" hidden></div>
@@ -288,5 +324,6 @@
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>
   <script src="screen-share.js"></script>
+  <script src="data-panel.js"></script>
 </body>
 </html>
