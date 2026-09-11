@@ -1298,43 +1298,79 @@
   msgInput.addEventListener('click', acRefresh);
   msgInput.addEventListener('blur', () => setTimeout(closeAutocomplete, 150));
 
-  // ---------- 文件上传 ----------
-  function uploadFile(file) {
+  // ---------- 文件上传（分片 + 断点续传） ----------
+  // 上传中断/刷新后重新选择同一文件：init 返回已收分片，自动跳过续传
+  function postJson(url, data) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).then((r) => r.json().catch(() => ({ ok: false, error: '响应解析失败' })));
+  }
+
+  async function uploadFile(file) {
     if (!file) return;
     if (file.size > 200 * 1024 * 1024) {
       setHint('文件超过 200MB 大小限制', 'error');
       return;
     }
-    setHint(`正在上传 ${file.name} …`);
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('nickname', myNickname);
-    formData.append('clientId', myClientId);
+    if (file.size <= 0) {
+      setHint('空文件无法上传', 'error');
+      return;
+    }
+    setHint(`正在上传 ${file.name} … 准备中`);
+    try {
+      // 1) 初始化（同一文件会返回已收分片 → 续传）
+      const init = await postJson('/upload/init', {
+        fileName: encodeURIComponent(file.name),
+        size: file.size,
+        lastModified: file.lastModified
+      });
+      if (!init || !init.ok) {
+        setHint((init && init.error) || '初始化上传失败', 'error');
+        return;
+      }
+      const { uploadId, chunkSize, totalChunks, received } = init;
+      const sentSet = new Set(received || []);
+      const already = sentSet.size;
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload');
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        setHint(`正在上传 ${file.name} … ${pct}%`);
+      // 2) 逐片上传未收分片
+      for (let i = 0; i < totalChunks; i++) {
+        if (sentSet.has(i)) continue;
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, file.size);
+        const blob = file.slice(start, end);
+        const fd = new FormData();
+        fd.append('file', blob, 'chunk.part');
+        fd.append('uploadId', uploadId);
+        fd.append('index', String(i));
+        const res = await fetch('/upload/chunk', { method: 'POST', body: fd }).catch(() => null);
+        if (!res || !res.ok) {
+          setHint(`上传中断（第 ${i + 1}/${totalChunks} 片）。重新选择同一文件可断点续传`, 'error');
+          return;
+        }
+        const done = already + (i - sentSet.size + 1);
+        setHint(`正在上传 ${file.name} … ${Math.round((done / totalChunks) * 100)}%`);
       }
-    };
-    xhr.onload = () => {
-      if (xhr.status === 200) {
-        setHint(`已发送文件 ${file.name}`, 'success');
-      } else {
-        let msg = '上传失败';
-        try {
-          const res = JSON.parse(xhr.responseText);
-          if (res.error) msg = res.error;
-        } catch (_) { /* ignore */ }
-        setHint(msg, 'error');
+
+      // 3) 合并 + 进聊天
+      const fd2 = new FormData();
+      fd2.append('uploadId', uploadId);
+      fd2.append('originalName', encodeURIComponent(file.name));
+      fd2.append('totalChunks', String(totalChunks));
+      fd2.append('size', String(file.size));
+      fd2.append('nickname', myNickname);
+      fd2.append('clientId', myClientId);
+      const comp = await fetch('/upload/complete', { method: 'POST', body: fd2 })
+        .then((r) => r.json().catch(() => null)).catch(() => null);
+      if (!comp || !comp.ok) {
+        setHint((comp && comp.error) || '合并文件失败', 'error');
+        return;
       }
-    };
-    xhr.onerror = () => {
-      setHint('上传失败，请检查网络连接', 'error');
-    };
-    xhr.send(formData);
+      setHint(`已发送文件 ${file.name}`, 'success');
+    } catch (e) {
+      setHint(`上传失败：${e.message || '未知错误'}`, 'error');
+    }
   }
 
   // 点击选择文件

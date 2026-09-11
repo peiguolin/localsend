@@ -32,3 +32,6 @@ Thumbs.db
 .test-tmp/*.db
 .test-tmp/*.db-wal
 .test-tmp/*.db-shm
+
+# 测试用的独立上传目录
+.test-tmp/resume-uploads/

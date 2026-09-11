@@ -18,6 +18,14 @@
 - 表结构预留 `room` 字段（当前统一 `main` 房间），为将来自定义群聊/分房间查询做好准备
 - `data/` 已加入 `.gitignore`，聊天记录**不会**被推送到 GitHub
 
+## 文件上传：自动分类归档 + 断点续传
+
+- **自动分类归档**：上传的文件按类型自动存到 `uploads/<分类>/<日期>/` 子目录（如 `uploads/document/20260827/`、`uploads/image/20260827/`）。常见类型映射已内置：
+  - `text`（txt/md/log/csv/json/xml…）、`document`（doc/docx/pdf/xls/ppt/odt…）、`archive`（zip/rar/7z/tar/gz…）
+  - `image`（png/jpg/gif/webp…）、`audio`（mp3/wav/flac…）、`video`（mp4/mkv/avi…）、`code`（js/py/java/c/html…）
+  - `program`（exe/msi/apk/deb…）、`font`（ttf/otf/woff…）、未识别归 `other`
+- **断点续传**：大文件自动切成 2MB 分片逐片上传；中途断网/刷新后**重新选择同一个文件**，会自动跳过已传分片从断点继续，不用重传整个文件（服务端暂存区 `uploads/.tmp/` 启动时自动清理）
+
 ## 快速开始
 
 ```bash
@@ -112,21 +120,21 @@ npm start          # 默认端口 3000，PORT=8080 npm start 可改
 ## 测试
 
 ```bash
-npm test   # 共享 + 昵称 + 语音信令 + 白板 + 主题 + 屏幕共享 + 聊天增强 + SQLite 持久化 + 数据面板冒烟
+npm test   # 共享 + 昵称 + 语音信令 + 白板 + 主题 + 屏幕共享 + 聊天增强 + SQLite 持久化 + 数据面板冒烟 + 断点续传/分类归档
 ```
 
-测试全部使用**独立 SQLite 库**（`.test-tmp/*.db`），不会污染真实 `data/chat.db`。
+测试全部使用**独立 SQLite 库**（`.test-tmp/*.db`）与**独立上传目录**（`.test-tmp/resume-uploads/`），不会污染真实数据。
 
 ## 结构
 
 ```
-server.js            HTTPS 服务 + 聊天 + 上传下载 + 共享中转 + 通话信令 + 白板中继
+server.js            HTTPS 服务 + 聊天 + 上传下载（分片/续传/分类归档）+ 共享中转 + 通话信令 + 白板中继
 db.js                SQLite 持久化层（自动建库、消息/笔迹读写、搜索、统计、清空）
 public/client.js     聊天前端 + 语音通话 + 昵称编辑
 public/share.js      共享面板 + 共享者本地代理（File System Access API）+ Tab 注册
 public/whiteboard.js 实时白板（Canvas 绘制 + 笔迹广播/重放）
 public/data-panel.js 数据面板（历史统计 / 搜索 / 导出备份 / 清空）
 certs/               自签名证书（自动生成）
-uploads/             聊天上传的文件（.meta.json 记录原始文件名）
+uploads/             上传文件按 <类型>/<日期>/ 归档（.meta.json 记录原文件名与相对路径；.tmp/ 为断点续传暂存区）
 data/chat.db         SQLite 聊天历史库（自动生成，已 gitignore）
 ```
