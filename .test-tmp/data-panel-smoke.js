@@ -19,7 +19,12 @@ function makeEl(tag) {
       _s: new Set(),
       add(...c) { c.forEach((x) => this._s.add(x)); },
       remove(...c) { c.forEach((x) => this._s.delete(x)); },
-      contains(c) { return this._s.has(c); }
+      contains(c) { return this._s.has(c); },
+      toggle(c, force) {
+        if (force === undefined) { if (this._s.has(c)) { this._s.delete(c); return false; } this._s.add(c); return true; }
+        if (force) this._s.add(c); else this._s.delete(c);
+        return !!force;
+      }
     },
     addEventListener(evt, fn) {
       (this._listeners = this._listeners || {})[evt] = (this._listeners[evt] || []).concat(fn);
@@ -118,6 +123,7 @@ const mediaStream = {
 
 global.window = windowStub;
 global.document = documentStub;
+global.CSS = { escape: (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c) };
 global.io = () => socketStub;
 global.RTCPeerConnection = FakePC;
 global.confirm = () => true;

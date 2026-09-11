@@ -53,6 +53,10 @@
     <!-- 主区域：消息区 + 成员列表 -->
     <main class="main" id="chatMain">
       <div class="chat-wrap">
+        <div class="room-titlebar">
+          <span class="rt-name">公共房</span>
+          <span class="rt-hint" id="roomTitleHint">所有人都在这里聊天</span>
+        </div>
         <div class="chat-area" id="chatArea">
           <!-- 消息将动态渲染到这里 -->
         </div>
@@ -78,6 +82,21 @@
         <div class="call-action-bar" id="callActionBar" hidden>
           <button class="call-action-btn" id="callSelectedBtn" type="button">发起通话 (0)</button>
           <button class="call-action-clear" id="callSelectionClearBtn" type="button" title="取消选择">✕</button>
+        </div>
+
+        <!-- 我的房间：公共房 + 我加入的群聊房 -->
+        <div class="room-section">
+          <div class="room-section-head">
+            <span class="sidebar-title">我的房间</span>
+            <button class="room-create-btn" id="roomCreateBtn" type="button" title="从在线成员多选，拉起新的群聊房间">＋ 拉起群聊</button>
+          </div>
+          <ul class="room-list" id="roomList">
+            <li class="room-item active" data-room="main" id="roomMain">
+              <span class="room-name">💬 公共房</span>
+              <span class="room-members">所有人</span>
+              <span class="room-unread" id="roomUnreadMain" hidden>0</span>
+            </li>
+          </ul>
         </div>
       </aside>
     </main>
@@ -314,6 +333,24 @@
         <button class="call-btn call-reject" id="callRejectBtn" type="button" hidden>拒绝</button>
         <button class="call-btn call-mute" id="callMuteBtn" type="button" hidden>静音</button>
         <button class="call-btn call-end" id="callEndBtn" type="button">挂断</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 拉起群聊弹窗 -->
+  <div class="modal" id="groupModal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-title">拉起群聊</div>
+      <label class="modal-label">群聊名称（可选，默认自动命名）
+        <input class="modal-input" id="groupNameInput" maxlength="30" placeholder="例如：项目讨论组">
+      </label>
+      <div class="modal-label">已选成员（<span id="groupSelCount">0</span>）</div>
+      <div class="group-sel-list" id="groupSelList"></div>
+      <div class="modal-tip" id="groupTip">从右侧在线成员里多选，再点「创建群聊」</div>
+      <div class="modal-btns">
+        <button class="tool-btn" id="groupCancel" type="button">取消</button>
+        <button class="share-primary-btn" id="groupConfirm" type="button">创建群聊</button>
       </div>
     </div>
   </div>

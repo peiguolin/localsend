@@ -1,7 +1,22 @@
 (function () {
   'use strict';
 
-  const socket = io();
+  // 持久身份：同一浏览器生成一次，重进/换昵称/换设备不丢；用于判断"哪条消息是我发的"
+  // 也随握手发给服务端，服务端据此下发我加入的群聊房并自动加入对应 Socket.IO room
+  const CLIENT_ID_KEY = 'localsend-client-id';
+  let myClientId = '';
+  try {
+    myClientId = localStorage.getItem(CLIENT_ID_KEY) || '';
+    if (!myClientId) {
+      myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(CLIENT_ID_KEY, myClientId);
+    }
+  } catch (_) { /* localStorage 不可用时用随机值（本次会话内仍能正确归属） */
+    myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+
+  // 握手带持久 clientId：服务端据此下发我加入的群聊房并自动加入对应 Socket.IO room
+  const socket = io({ auth: { clientId: myClientId } });
 
   // ---------- DOM 引用 ----------
   const connStatus = document.getElementById('connStatus');
@@ -36,20 +51,14 @@
   const callSelectionClearBtn = document.getElementById('callSelectionClearBtn');
 
   const NICK_STORAGE_KEY = 'localsend-nickname';
-  const CLIENT_ID_KEY = 'localsend-client-id';
   let myNickname = '';
   let myId = '';
-  // 持久身份：同一浏览器生成一次，重进/换昵称/换设备不丢；用于判断"哪条消息是我发的"
-  let myClientId = '';
-  try {
-    myClientId = localStorage.getItem(CLIENT_ID_KEY) || '';
-    if (!myClientId) {
-      myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-      localStorage.setItem(CLIENT_ID_KEY, myClientId);
-    }
-  } catch (_) { /* localStorage 不可用时用随机值（本次会话内仍能正确归属） */
-    myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-  }
+  // ---------- 群聊房间状态 ----------
+  let currentRoom = 'main';      // 当前正在查看的房间（默认公共房）
+  let myRooms = [];              // 我加入的群聊房 [{id,name,members,...}]
+  const roomUnread = new Map();  // room -> 未读数（'main' 也统计）
+  // ---------- 群聊房间状态（end） ----------
+  // 持久身份 myClientId 已在 IIFE 顶部初始化（握手需要）
   let nickEditing = false;
   let nickErrorTimer = null;
   let latestMembers = []; // 最新成员列表（@ 自动补全数据源）
@@ -1047,14 +1056,257 @@
         }
       });
     }
+    // 恢复我加入的群聊房（房间持久化：重启后仍在）
+    myRooms = Array.isArray(data.rooms) ? data.rooms : [];
+    renderRoomList();
   });
 
   socket.on('system_message', (data) => {
+    // 群聊系统消息带 room：只渲染当前房间的；公共房系统消息无 room 字段
+    if (data && data.room && data.room !== currentRoom) return;
     renderSystemMsg(data);
   });
 
+  // ==================== 群聊房间 ====================
+
+  function roomDisplayName(room) {
+    return room && room.name ? room.name : '群聊';
+  }
+
+  // 渲染右侧房间列表（公共房 + 我加入的群聊房）
+  function renderRoomList() {
+    const list = document.getElementById('roomList');
+    const roomMain = document.getElementById('roomMain');
+    // 公共房始终第一项，active 态由 currentRoom 决定
+    if (roomMain) roomMain.classList.toggle('active', currentRoom === 'main');
+    // 移除旧群聊项（保留公共房）
+    const old = list.querySelectorAll('.room-item[data-room^="g"]');
+    old.forEach((el) => el.remove());
+    for (const r of myRooms) {
+      const li = document.createElement('li');
+      li.className = 'room-item' + (currentRoom === r.id ? ' active' : '');
+      li.dataset.room = r.id;
+      const unread = roomUnread.get(r.id) || 0;
+      const membersText = (r.members || []).map((m) => m.nickname).join('、');
+      li.innerHTML =
+        `<span class="room-name">${escapeHtml(roomDisplayName(r))}</span>` +
+        `<span class="room-members" title="${escapeHtml(membersText)}">${escapeHtml((r.members || []).length + '人')}</span>` +
+        `<span class="room-unread" data-role="unread"${unread ? '' : ' hidden'}>${unread}</span>` +
+        `<button class="room-leave" data-role="leave" title="退出/解散群聊">✕</button>`;
+      li.addEventListener('click', (e) => {
+        if (e.target.closest('[data-role="leave"]')) {
+          e.stopPropagation();
+          leaveRoom(r.id);
+          return;
+        }
+        switchRoom(r.id);
+      });
+      list.appendChild(li);
+    }
+    updateRoomUnreadBadge(currentRoom);
+  }
+
+  // 房间未读角标更新（含顶部 tab 红点联动）
+  function updateRoomUnreadBadge(room) {
+    const list = document.getElementById('roomList');
+    const item = list.querySelector(`.room-item[data-room="${CSS.escape(room)}"]`);
+    const badge = item && item.querySelector('[data-role="unread"]');
+    const n = roomUnread.get(room) || 0;
+    if (badge) {
+      badge.textContent = n;
+      badge.hidden = n === 0;
+    }
+  }
+
+  // 切换房间：清空聊天区 → 加载该房间历史 → 更新标题/输入区/房间列表
+  function switchRoom(room) {
+    if (room === currentRoom) return;
+    currentRoom = room;
+    roomUnread.set(room, 0);
+    chatArea.innerHTML = '';
+    msgStore.clear();
+    // 更新房间列表 active
+    document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
+    updateRoomUnreadBadge(room);
+    updateRoomTitlebar();
+    // 加载该房间历史
+    socket.emit('room_history', { room }, (res) => {
+      if (res && res.ok) {
+        const sep = document.createElement('div');
+        sep.className = 'msg system';
+        sep.innerHTML = `<div class="msg-bubble">—— ${escapeHtml(room === 'main' ? '公共房' : roomDisplayName(myRooms.find((r) => r.id === room)))} 最近 ${res.history.length} 条消息 ——</div>`;
+        appendMsg(sep);
+        res.history.forEach((m) => {
+          if (!m || m.recalled) return;
+          if (m.id) msgStore.set(m.id, m);
+          if (m.type === 'image') renderImageMsg(m);
+          else if (m.type === 'file') renderFileMsg(m);
+          else renderTextMsg(m);
+        });
+        const sepEnd = document.createElement('div');
+        sepEnd.className = 'msg system';
+        sepEnd.innerHTML = `<div class="msg-bubble">—— 历史消息结束 ——</div>`;
+        appendMsg(sepEnd);
+        scrollToBottom(false);
+      }
+    });
+  }
+
+  // 顶部标题栏：显示当前房间名（切换房间时刷新）
+  function updateRoomTitlebar() {
+    let title = '公共房';
+    let hint = '所有人都在这里聊天';
+    if (currentRoom !== 'main') {
+      const r = myRooms.find((x) => x.id === currentRoom);
+      title = roomDisplayName(r);
+      hint = r ? (r.members || []).map((m) => m.nickname).join('、') : '';
+    }
+    const bar = document.querySelector('.room-titlebar .rt-name');
+    if (bar) bar.textContent = title;
+    const hintEl = document.getElementById('roomTitleHint');
+    if (hintEl) hintEl.textContent = hint;
+  }
+
+  // 退出/解散群聊
+  function leaveRoom(room) {
+    const r = myRooms.find((x) => x.id === room);
+    const label = r ? roomDisplayName(r) : '该群聊';
+    if (!confirm(`确定退出「${label}」吗？\n创建者退出将解散该群聊（历史消息保留在服务器）`)) return;
+    socket.emit('group_leave', { room }, (res) => {
+      if (res && res.ok) {
+        if (res.disbanded) {
+          removeRoomFromList(room);
+        } else {
+          removeRoomFromList(room);
+        }
+        if (currentRoom === room) switchRoom('main');
+      } else {
+        setHint((res && res.error) || '操作失败', 'error');
+      }
+    });
+  }
+
+  function removeRoomFromList(room) {
+    myRooms = myRooms.filter((r) => r.id !== room);
+    roomUnread.delete(room);
+    renderRoomList();
+  }
+
+  // 收到群聊创建通知（被拉的人）
+  socket.on('group_invited', (data) => {
+    const room = data && data.room;
+    if (!room) return;
+    if (!myRooms.some((r) => r.id === room.id)) {
+      myRooms.push(room);
+      renderRoomList();
+      setHint(`你被拉入了群聊「${roomDisplayName(room)}」`, 'success');
+    }
+  });
+
+  // 自己创建的群聊
+  socket.on('group_created', (data) => {
+    const room = data && data.room;
+    if (!room) return;
+    if (!myRooms.some((r) => r.id === room.id)) {
+      myRooms.push(room);
+      renderRoomList();
+    }
+    setHint(`群聊「${roomDisplayName(room)}」创建成功`, 'success');
+  });
+
+  // 群聊被解散 / 自己被移出
+  socket.on('group_disbanded', (data) => {
+    const room = data && data.room;
+    removeRoomFromList(room);
+    if (currentRoom === room) switchRoom('main');
+    setHint('群聊已解散', '');
+  });
+
+  socket.on('group_left', (data) => {
+    const room = data && data.room;
+    removeRoomFromList(room);
+    if (currentRoom === room) switchRoom('main');
+  });
+
+  // 群聊改名（服务端广播系统消息；列表名用最新数据刷新）
+  socket.on('group_renamed', (data) => {
+    const room = data && data.room;
+    if (!room) return;
+    const idx = myRooms.findIndex((r) => r.id === room.id);
+    if (idx >= 0) myRooms[idx] = room;
+    renderRoomList();
+    if (currentRoom === room.id) updateRoomTitlebar();
+  });
+
+  // ---------- 拉起群聊弹窗 ----------
+  const groupModal = document.getElementById('groupModal');
+  const groupNameInput = document.getElementById('groupNameInput');
+  const groupSelList = document.getElementById('groupSelList');
+  const groupSelCount = document.getElementById('groupSelCount');
+  const groupConfirm = document.getElementById('groupConfirm');
+  const groupTip = document.getElementById('groupTip');
+  const roomCreateBtn = document.getElementById('roomCreateBtn');
+  let groupSel = new Map(); // socketId -> nickname
+
+  function openGroupModal() {
+    groupSel = new Map();
+    renderGroupSel();
+    groupNameInput.value = '';
+    groupTip.textContent = '从右侧在线成员里多选，再点「创建群聊」';
+    groupModal.hidden = false;
+  }
+
+  function renderGroupSel() {
+    groupSelList.innerHTML = '';
+    groupSelCount.textContent = groupSel.size;
+    groupSel.forEach((nick, sid) => {
+      const chip = document.createElement('span');
+      chip.className = 'group-sel-chip';
+      chip.innerHTML = `${escapeHtml(nick)} <span class="chip-remove" data-sid="${sid}">✕</span>`;
+      chip.querySelector('.chip-remove').addEventListener('click', () => {
+        groupSel.delete(sid);
+        renderGroupSel();
+      });
+      groupSelList.appendChild(chip);
+    });
+    groupConfirm.disabled = groupSel.size === 0;
+  }
+
+  roomCreateBtn.addEventListener('click', openGroupModal);
+  document.getElementById('groupCancel').addEventListener('click', () => { groupModal.hidden = true; });
+  groupModal.addEventListener('click', (e) => {
+    if (e.target === groupModal || e.target.classList.contains('modal-backdrop')) groupModal.hidden = true;
+  });
+  groupConfirm.addEventListener('click', () => {
+    if (!groupSel.size) return;
+    const targetIds = Array.from(groupSel.keys());
+    const name = groupNameInput.value.trim();
+    socket.emit('group_create', { targetIds, name: name || undefined }, (res) => {
+      if (res && res.ok) {
+        groupModal.hidden = true;
+      } else {
+        groupTip.textContent = (res && res.error) || '创建失败';
+      }
+    });
+  });
+
+  // 成员列表点击已多选（供通话）；点「拉起群聊」时把已选成员带入群聊选择
+  roomCreateBtn.addEventListener('click', () => {
+    openGroupModal();
+  });
+
+  // 更新房间标题栏在页面加载后
+  window.addEventListener('load', updateRoomTitlebar);
+
   socket.on('chat_message', (data) => {
     if (data.id) msgStore.set(data.id, data);
+    const msgRoom = data.room || 'main';
+    if (msgRoom !== currentRoom) {
+      // 不是当前房间 → 只加该房间未读（页面有焦点且是当前房间才清，其它房间先计数）
+      roomUnread.set(msgRoom, (roomUnread.get(msgRoom) || 0) + 1);
+      updateRoomUnreadBadge(msgRoom);
+      return;
+    }
     if (data.type === 'image') {
       renderImageMsg(data);
     } else if (data.type === 'file') {
@@ -1074,7 +1326,7 @@
   function sendMessage() {
     const text = msgInput.value.trim();
     if (!text) return;
-    socket.emit('chat_message', { text, quoteId: quoting ? quoting.id : undefined, clientId: myClientId });
+    socket.emit('chat_message', { text, quoteId: quoting ? quoting.id : undefined, clientId: myClientId, room: currentRoom });
     msgInput.value = '';
     clearQuote();
     closeAutocomplete();
@@ -1361,6 +1613,7 @@
       fd2.append('size', String(file.size));
       fd2.append('nickname', myNickname);
       fd2.append('clientId', myClientId);
+      fd2.append('room', currentRoom);
       const comp = await fetch('/upload/complete', { method: 'POST', body: fd2 })
         .then((r) => r.json().catch(() => null)).catch(() => null);
       if (!comp || !comp.ok) {

@@ -58,6 +58,14 @@ function init() {
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_strokes_room ON strokes(room);
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      owner_client_id TEXT NOT NULL,
+      owner_nick TEXT NOT NULL,
+      members_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -285,9 +293,59 @@ function close() {
   if (db) { try { db.close(); } catch (_) {} db = null; }
 }
 
+// ---------- 群聊房间 ----------
+// room 对象：{ id, name, ownerClientId, ownerNick, members: [{ clientId, nickname }], createdAt }
+// members 序列化为 JSON 存 members_json（持久化成员身份用 clientId，socketId 每次连接都变）
+
+function createRoom(room) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO rooms (id, name, owner_client_id, owner_nick, members_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    room.id,
+    room.name,
+    room.ownerClientId,
+    room.ownerNick,
+    JSON.stringify(room.members || []),
+    room.createdAt || Date.now()
+  );
+  return room;
+}
+
+function loadRooms() {
+  const d = getDb();
+  const rows = d.prepare(`
+    SELECT id, name, owner_client_id AS ownerClientId, owner_nick AS ownerNick,
+           members_json AS membersJson, created_at AS createdAt
+    FROM rooms ORDER BY created_at ASC
+  `).all();
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    ownerClientId: r.ownerClientId,
+    ownerNick: r.ownerNick,
+    members: (() => { try { return JSON.parse(r.membersJson); } catch (_) { return []; } })(),
+    createdAt: r.createdAt
+  }));
+}
+
+function updateRoom(room) {
+  const d = getDb();
+  d.prepare(`
+    UPDATE rooms SET name = ?, members_json = ? WHERE id = ?
+  `).run(room.name, JSON.stringify(room.members || []), room.id);
+}
+
+function deleteRoom(id) {
+  const d = getDb();
+  d.prepare('DELETE FROM rooms WHERE id = ?').run(id);
+}
+
 module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
   insertMessage, loadMessages, getMessageById, recallMessage, searchMessages, stats, clearHistory, trimMessages,
-  insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes
+  insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes,
+  createRoom, loadRooms, updateRoom, deleteRoom
 };
