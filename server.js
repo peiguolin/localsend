@@ -190,7 +190,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
   saveMeta(storedName, originalName, size);
 
   const nickname = (req.body && req.body.nickname) || '匿名';
-  const base = { id: nextMsgId(), nickname, fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now() };
+  const base = { id: nextMsgId(), nickname, clientId: String((req.body && req.body.clientId) || ''), fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now() };
 
   // 图片文件：广播 type:'image' 并带上预览地址，前端直接渲染在线预览
   const mime = detectImageMime(storedName, req.file.path);
@@ -704,6 +704,7 @@ io.on('connection', (socket) => {
       id: nextMsgId(),
       type: 'text',
       senderId: socket.id,
+      clientId: String((data && data.clientId) || ''),
       nickname,
       text,
       mentions: parseMentions(text),
@@ -730,11 +731,14 @@ io.on('connection', (socket) => {
       msg = store.getMessageById(id);
     }
     if (!msg || msg.recalled) return cb({ ok: false, error: '消息不存在或已被撤回' });
-    if (msg.nickname !== nickname) return cb({ ok: false, error: '只能撤回自己的消息' });
+    // 本人校验：优先持久 clientId（换昵称也能撤自己的历史消息），无则退回昵称
+    const reqClientId = String((data && data.clientId) || '');
+    const isOwner = reqClientId && msg.clientId ? reqClientId === msg.clientId : msg.nickname === nickname;
+    if (!isOwner) return cb({ ok: false, error: '只能撤回自己的消息' });
     if (Date.now() - msg.timestamp > RECALL_WINDOW) return cb({ ok: false, error: '超过 2 分钟，无法撤回' });
     msg.recalled = true;
     store.recallMessage(id);
-    io.emit('chat_recall', { id: msg.id, nickname, timestamp: Date.now() });
+    io.emit('chat_recall', { id: msg.id, nickname, clientId: msg.clientId || '', timestamp: Date.now() });
     cb({ ok: true });
   });
 

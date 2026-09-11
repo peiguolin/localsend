@@ -35,6 +35,7 @@ function init() {
       type TEXT NOT NULL DEFAULT 'text',
       nickname TEXT NOT NULL,
       sender_id TEXT,
+      client_id TEXT,
       text TEXT,
       file_name TEXT,
       file_size INTEGER,
@@ -58,6 +59,11 @@ function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_strokes_room ON strokes(room);
   `);
+  // 兼容旧库：已有表缺 client_id 列时补上
+  const cols = db.prepare(`PRAGMA table_info(messages)`).all();
+  if (!cols.some((c) => c.name === 'client_id')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN client_id TEXT`);
+  }
   return db;
 }
 
@@ -66,18 +72,19 @@ function getDb() {
 }
 
 // ---------- 消息 ----------
-// msg: {id, room?, type, nickname, senderId, text?, fileName?, fileSize?, quote?, timestamp, recalled?}
+// msg: {id, room?, type, nickname, senderId, clientId, text?, fileName?, fileSize?, quote?, timestamp, recalled?}
 function insertMessage(msg) {
   const d = getDb();
   d.prepare(`
-    INSERT INTO messages (msg_id, room, type, nickname, sender_id, text, file_name, file_size, quote_json, recalled, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (msg_id, room, type, nickname, sender_id, client_id, text, file_name, file_size, quote_json, recalled, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id || null,
     msg.room || 'main',
     msg.type || 'text',
     msg.nickname || '',
     msg.senderId || '',
+    msg.clientId || '',
     msg.text || null,
     msg.fileName || null,
     msg.fileSize || null,
@@ -93,7 +100,7 @@ function loadMessages(limit, room) {
   const d = getDb();
   const rows = d.prepare(`
     SELECT * FROM (
-      SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, text, file_name AS fileName,
+      SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName,
              file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp
       FROM messages
       WHERE room = ?
@@ -107,6 +114,7 @@ function loadMessages(limit, room) {
     type: r.type,
     nickname: r.nickname,
     senderId: r.senderId,
+    clientId: r.clientId || '',
     text: r.text,
     fileName: r.fileName,
     fileSize: r.fileSize,
@@ -131,8 +139,8 @@ function getMessageById(id) {
   const d = getDb();
   const key = String(id || '');
   const r = /^m/.test(key)
-    ? d.prepare('SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, text, file_name AS fileName, file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp FROM messages WHERE msg_id = ? LIMIT 1').get(key)
-    : d.prepare('SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, text, file_name AS fileName, file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp FROM messages WHERE id = ? LIMIT 1').get(Number(key) || 0);
+    ? d.prepare('SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName, file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp FROM messages WHERE msg_id = ? LIMIT 1').get(key)
+    : d.prepare('SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName, file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp FROM messages WHERE id = ? LIMIT 1').get(Number(key) || 0);
   if (!r) return null;
   return {
     id: r.mid || String(r.id),
@@ -140,6 +148,7 @@ function getMessageById(id) {
     type: r.type,
     nickname: r.nickname,
     senderId: r.senderId,
+    clientId: r.clientId || '',
     text: r.text,
     fileName: r.fileName,
     fileSize: r.fileSize,
@@ -164,7 +173,7 @@ function searchMessages(opts) {
   if (from) { where.push('timestamp >= ?'); args.push(Number(from)); }
   if (to) { where.push('timestamp <= ?'); args.push(Number(to)); }
   const rows = d.prepare(`
-    SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, text, file_name AS fileName,
+    SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName,
            file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp
     FROM messages WHERE ${where.join(' AND ')}
     ORDER BY id DESC LIMIT ?
@@ -175,6 +184,7 @@ function searchMessages(opts) {
     type: r.type,
     nickname: r.nickname,
     senderId: r.senderId,
+    clientId: r.clientId || '',
     text: r.text,
     fileName: r.fileName,
     fileSize: r.fileSize,

@@ -121,6 +121,13 @@ global.document = documentStub;
 global.io = () => socketStub;
 global.RTCPeerConnection = FakePC;
 global.confirm = () => true;
+// localStorage 桩：预置固定 clientId，验证"自己的历史消息"归属判断
+const lsStore = { 'localsend-client-id': 'c-test-user' };
+global.localStorage = {
+  getItem: (k) => (k in lsStore ? lsStore[k] : null),
+  setItem: (k, v) => { lsStore[k] = String(v); },
+  removeItem: (k) => { delete lsStore[k]; }
+};
 Object.defineProperty(global, 'navigator', {
   configurable: true,
   value: { mediaDevices: { getUserMedia: () => Promise.resolve(mediaStream) } }
@@ -148,9 +155,10 @@ console.log('--- 欢迎历史消息渲染 ---');
 socketHandlers.welcome({
   id: 'me-1', nickname: '我', online: 2,
   history: [
-    { id: 'h1', type: 'text', nickname: '张三', text: '昨天的消息', timestamp: 1700000000000, recalled: false },
-    { id: 'h2', type: 'text', nickname: '李四', text: '被撤回的消息', timestamp: 1700000001000, recalled: true },
-    { id: 'h3', type: 'file', nickname: '王五', fileName: '报告.pdf', fileSize: 1024, timestamp: 1700000002000, recalled: false }
+    { id: 'h1', type: 'text', nickname: '张三', text: '昨天的消息', timestamp: 1700000000000, recalled: false, clientId: 'c-other' },
+    { id: 'h2', type: 'text', nickname: '李四', text: '被撤回的消息', timestamp: 1700000001000, recalled: true, clientId: 'c-other' },
+    { id: 'h3', type: 'file', nickname: '王五', fileName: '报告.pdf', fileSize: 1024, timestamp: 1700000002000, recalled: false, clientId: 'c-other' },
+    { id: 'h4', type: 'text', nickname: '旧昵称', text: '我自己的历史消息', timestamp: 1700000003000, recalled: false, clientId: 'c-test-user' }
   ]
 });
 // chatArea 应渲染了历史（通过 appendMsg）
@@ -161,6 +169,9 @@ assert(allHtml.includes('昨天的消息'), '包含未撤回文本消息');
 assert(allHtml.includes('报告.pdf'), '包含文件消息');
 assert(!allHtml.includes('被撤回的消息'), '不含被撤回的消息');
 assert(allHtml.includes('历史消息'), '包含历史分隔提示');
+// h4：clientId 匹配当前用户 → 应渲染为 self（msg-self，右侧）
+const selfMsgs = chatArea.children.filter((c) => (c._html || '').includes('我自己的历史消息'));
+assert(selfMsgs.length === 1 && selfMsgs[0].className && selfMsgs[0].className.includes('self'), '匹配 clientId 的历史消息渲染为自己的（右侧）');
 
 console.log('--- 数据面板统计 ---');
 // 模拟 history_stats ack

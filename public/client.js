@@ -36,8 +36,20 @@
   const callSelectionClearBtn = document.getElementById('callSelectionClearBtn');
 
   const NICK_STORAGE_KEY = 'localsend-nickname';
+  const CLIENT_ID_KEY = 'localsend-client-id';
   let myNickname = '';
   let myId = '';
+  // 持久身份：同一浏览器生成一次，重进/换昵称/换设备不丢；用于判断"哪条消息是我发的"
+  let myClientId = '';
+  try {
+    myClientId = localStorage.getItem(CLIENT_ID_KEY) || '';
+    if (!myClientId) {
+      myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(CLIENT_ID_KEY, myClientId);
+    }
+  } catch (_) { /* localStorage 不可用时用随机值（本次会话内仍能正确归属） */
+    myClientId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
   let nickEditing = false;
   let nickErrorTimer = null;
   let latestMembers = []; // 最新成员列表（@ 自动补全数据源）
@@ -214,7 +226,7 @@
 
   // 收到消息后的未读判定：自己的消息 / 页面有焦点都不计数；@提及时播放专属提示音
   function handleIncomingMessage(data) {
-    if (data.nickname === myNickname) return;
+    if (isOwnMessage(data)) return;
     const mentioned = (data.mentions || []).includes(myNickname);
     if (mentioned) playMentionPing();
     if (document.hasFocus()) return;
@@ -767,8 +779,14 @@
     setTimeout(() => el.classList.remove('flash'), 1200);
   }
 
+  // 归属判断：优先用持久 clientId（重进/换昵称也正确）；旧数据无 clientId 时退回昵称匹配
+  function isOwnMessage(data) {
+    if (data && data.clientId) return data.clientId === myClientId;
+    return data && data.nickname === myNickname;
+  }
+
   function renderTextMsg(data) {
-    const isSelf = data.nickname === myNickname;
+    const isSelf = isOwnMessage(data);
     const mentionedMe = !isSelf && (data.mentions || []).includes(myNickname);
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other') + (mentionedMe ? ' mentioned' : '');
@@ -788,7 +806,7 @@
   }
 
   function renderFileMsg(data) {
-    const isSelf = data.nickname === myNickname;
+    const isSelf = isOwnMessage(data);
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other');
     if (data.id) div.dataset.mid = data.id;
@@ -817,7 +835,7 @@
   }
 
   function renderImageMsg(data) {
-    const isSelf = data.nickname === myNickname;
+    const isSelf = isOwnMessage(data);
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other');
     if (data.id) div.dataset.mid = data.id;
@@ -1056,7 +1074,7 @@
   function sendMessage() {
     const text = msgInput.value.trim();
     if (!text) return;
-    socket.emit('chat_message', { text, quoteId: quoting ? quoting.id : undefined });
+    socket.emit('chat_message', { text, quoteId: quoting ? quoting.id : undefined, clientId: myClientId });
     msgInput.value = '';
     clearQuote();
     closeAutocomplete();
@@ -1108,7 +1126,7 @@
     if (data.type === 'text') {
       items.push({ label: '复制文本', fn: () => copyText(data.text) });
     }
-    if (data.nickname === myNickname && Date.now() - data.timestamp < 120000) {
+    if (isOwnMessage(data) && Date.now() - data.timestamp < 120000) {
       items.push({ label: '撤回', danger: true, fn: () => recallMessage(data.id) });
     }
     for (const it of items) {
@@ -1183,7 +1201,7 @@
 
   // ---------- 撤回消息 ----------
   function recallMessage(id) {
-    socket.emit('chat_recall', { id }, (res) => {
+    socket.emit('chat_recall', { id, clientId: myClientId }, (res) => {
       if (!res || !res.ok) setHint((res && res.error) || '撤回失败', 'error');
     });
   }
@@ -1195,7 +1213,7 @@
     if (quoting && quoting.id === data.id) clearQuote();
     const el = chatArea.querySelector(`[data-mid="${CSS.escape(data.id)}"]`);
     if (el) {
-      const isSelf = data.nickname === myNickname;
+      const isSelf = isOwnMessage({ nickname: data.nickname, clientId: data.clientId });
       el.className = 'msg system';
       el.removeAttribute('data-mid');
       el.innerHTML = `<div class="msg-bubble">${escapeHtml(isSelf ? '你' : data.nickname)} 撤回了一条消息</div>`;
@@ -1291,6 +1309,7 @@
     const formData = new FormData();
     formData.append('file', file);
     formData.append('nickname', myNickname);
+    formData.append('clientId', myClientId);
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/upload');

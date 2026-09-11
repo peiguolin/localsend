@@ -76,15 +76,16 @@ async function main() {
 
     console.log('【消息落盘】');
     const recvP = waitEvent(b.s, 'chat_message');
-    a.s.emit('chat_message', { text: '你好，持久化测试第一条' });
+    a.s.emit('chat_message', { text: '你好，持久化测试第一条', clientId: 'client-a' });
     const m1 = await recvP;
     check('消息广播成功', m1.text === '你好，持久化测试第一条' && !!m1.id);
+    check('广播带 clientId', m1.clientId === 'client-a');
 
     const recvP2 = waitEvent(b.s, 'chat_message');
-    a.s.emit('chat_message', { text: '第二条，稍后会被撤回' });
+    a.s.emit('chat_message', { text: '第二条，稍后会被撤回', clientId: 'client-a' });
     const m2 = await recvP2;
     const recvP3 = waitEvent(b.s, 'chat_message');
-    a.s.emit('chat_message', { text: '第三条，含关键词 SQLite' });
+    a.s.emit('chat_message', { text: '第三条，含关键词 SQLite', clientId: 'client-a' });
     await recvP3;
     await sleep(300);
 
@@ -99,7 +100,7 @@ async function main() {
     check('按昵称搜索命中 3 条', search2.ok && search2.results.length === 3);
 
     console.log('【撤回联动数据库】');
-    const recallRes = await emitAck(a.s, 'chat_recall', { id: m2.id });
+    const recallRes = await emitAck(a.s, 'chat_recall', { id: m2.id, clientId: 'client-a' });
     check('撤回成功', recallRes.ok === true);
     await sleep(200);
 
@@ -128,6 +129,7 @@ async function main() {
     check('恢复的消息含第一条', texts.includes('你好，持久化测试第一条'));
     check('被撤回的消息带 recalled 标记', c.history.some((m) => m.recalled && m.text === '第二条，稍后会被撤回'));
     check('历史按时间正序', c.history.every((m, i) => i === 0 || c.history[i - 1].timestamp <= m.timestamp));
+    check('恢复的消息保留 clientId', c.history.every((m) => m.clientId === 'client-a'));
 
     console.log('【重启后搜索/统计仍可用】');
     const stats2 = await emitAck(c.s, 'history_stats');
@@ -147,7 +149,7 @@ async function main() {
     await sleep(200);
     // 历史消息不在内存 chatLog，撤回走 DB 路径
     const histMsg = c.history.find((m) => m.text === '你好，持久化测试第一条');
-    const recallHist = await emitAck(c.s, 'chat_recall', { id: histMsg.id });
+    const recallHist = await emitAck(c.s, 'chat_recall', { id: histMsg.id, clientId: 'client-a' });
     check('历史消息可撤回', recallHist.ok === true);
     const search4 = await emitAck(c.s, 'history_search', { keyword: '持久化测试第一条' });
     check('撤回后搜索不再返回原文', !search4.results.some((m) => !m.recalled));
