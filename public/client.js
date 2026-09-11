@@ -1030,6 +1030,17 @@
   // 初始 favicon（蓝色圆点）
   updateTabIndicator();
 
+  // ---------- 深色 / 浅色主题切换 ----------
+  const THEME_STORAGE_KEY = 'localsend-theme';
+  const themeToggle = document.getElementById('themeToggle');
+  if (themeToggle) {
+    themeToggle.addEventListener('click', () => {
+      const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (_) { /* ignore */ }
+    });
+  }
+
   // ---------- 昵称修改（点击顶栏昵称内联编辑） ----------
   function applyNickname(name) {
     myNickname = name;

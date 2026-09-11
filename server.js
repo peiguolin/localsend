@@ -568,6 +568,17 @@ function assignCursorColor() {
   return best;
 }
 
+// ---------- 屏幕共享状态（1 名共享者 → 多名观看者，WebRTC Mesh） ----------
+let screenShare = null; // { presenterId, presenterName, startedAt, viewers: Set<socketId> }
+const SS_MAX_VIEWERS = 8; // Mesh 拓扑下共享者为每个观看者独立编码，限制人数防过载
+
+function endScreenShare(reason) {
+  if (!screenShare) return;
+  const presenterId = screenShare.presenterId;
+  screenShare = null;
+  io.emit('ss_ended', { reason, presenterId });
+}
+
 function randomNickname() {
   return `用户${Math.floor(1000 + Math.random() * 9000)}`;
 }
@@ -597,6 +608,10 @@ io.on('connection', (socket) => {
   socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size });
   // 推送当前共享列表
   socket.emit('shares_update', Array.from(shares.values()).map(publicShareInfo));
+  // 推送当前屏幕共享状态
+  socket.emit('ss_state', screenShare
+    ? { active: true, presenterId: screenShare.presenterId, presenterName: screenShare.presenterName }
+    : { active: false });
 
   // 广播上线
   io.emit('system_message', {
@@ -895,6 +910,93 @@ io.on('connection', (socket) => {
     io.emit('wb_clear', { author: nickname });
   });
 
+  // ---------- 屏幕共享（信令转发；媒体流 P2P 直连不经过服务器） ----------
+
+  // 开始共享（全站同时只允许一名共享者）
+  socket.on('ss_start', (data, cb) => {
+    // 兼容 emit(event, ack) 与 emit(event, data, ack) 两种调用
+    if (typeof data === 'function') { cb = data; }
+    cb = typeof cb === 'function' ? cb : () => {};
+    if (screenShare) {
+      return cb({ ok: false, error: `${screenShare.presenterName} 正在共享屏幕` });
+    }
+    screenShare = {
+      presenterId: socket.id,
+      presenterName: nickname,
+      startedAt: Date.now(),
+      viewers: new Set()
+    };
+    io.emit('ss_started', { presenterId: socket.id, presenterName: nickname });
+    io.emit('system_message', {
+      type: 'screen', nickname,
+      text: `${nickname} 开始了屏幕共享`,
+      timestamp: Date.now()
+    });
+    cb({ ok: true });
+  });
+
+  // 停止共享（仅共享者本人）
+  socket.on('ss_stop', () => {
+    if (screenShare && screenShare.presenterId === socket.id) {
+      io.emit('system_message', {
+        type: 'screen', nickname,
+        text: `${nickname} 结束了屏幕共享`,
+        timestamp: Date.now()
+      });
+      endScreenShare('stop');
+    }
+  });
+
+  // 观看共享
+  socket.on('ss_watch', (data, cb) => {
+    if (typeof data === 'function') { cb = data; }
+    cb = typeof cb === 'function' ? cb : () => {};
+    if (!screenShare) return cb({ ok: false, error: '当前没有人共享屏幕' });
+    if (screenShare.presenterId === socket.id) return cb({ ok: false, error: '你是共享者，无需观看' });
+    if (screenShare.viewers.has(socket.id)) {
+      // 幂等：重复观看直接成功（不重复通知共享者）
+      return cb({ ok: true, presenterId: screenShare.presenterId, presenterName: screenShare.presenterName });
+    }
+    if (screenShare.viewers.size >= SS_MAX_VIEWERS) return cb({ ok: false, error: '观看人数已满' });
+    screenShare.viewers.add(socket.id);
+    const presenter = io.sockets.sockets.get(screenShare.presenterId);
+    if (presenter) presenter.emit('ss_viewer_joined', { viewerId: socket.id, viewerName: nickname });
+    cb({ ok: true, presenterId: screenShare.presenterId, presenterName: screenShare.presenterName });
+  });
+
+  // 退出观看
+  socket.on('ss_unwatch', () => {
+    if (screenShare && screenShare.viewers.delete(socket.id)) {
+      const presenter = io.sockets.sockets.get(screenShare.presenterId);
+      if (presenter) presenter.emit('ss_viewer_left', { viewerId: socket.id });
+    }
+  });
+
+  // SDP / ICE 转发（角色校验：offer 只能来自共享者，answer 只能发给共享者，ICE 仅限共享者-观看者对）
+  socket.on('ss_offer', (data) => {
+    if (!screenShare || screenShare.presenterId !== socket.id) return;
+    const toId = String((data && data.toId) || '');
+    if (!screenShare.viewers.has(toId)) return;
+    const target = io.sockets.sockets.get(toId);
+    if (target && target.connected) target.emit('ss_offer', { fromId: socket.id, sdp: data && data.sdp });
+  });
+  socket.on('ss_answer', (data) => {
+    if (!screenShare) return;
+    const toId = String((data && data.toId) || '');
+    if (toId !== screenShare.presenterId || !screenShare.viewers.has(socket.id)) return;
+    const target = io.sockets.sockets.get(toId);
+    if (target && target.connected) target.emit('ss_answer', { fromId: socket.id, sdp: data && data.sdp });
+  });
+  socket.on('ss_ice', (data) => {
+    if (!screenShare) return;
+    const toId = String((data && data.toId) || '');
+    const isPair = (socket.id === screenShare.presenterId && screenShare.viewers.has(toId)) ||
+                   (toId === screenShare.presenterId && screenShare.viewers.has(socket.id));
+    if (!isPair) return;
+    const target = io.sockets.sockets.get(toId);
+    if (target && target.connected) target.emit('ss_ice', { fromId: socket.id, candidate: data && data.candidate });
+  });
+
   // ---------- 文件夹共享 ----------
 
   // 注册共享（每人同时只能共享一个文件夹）
@@ -983,6 +1085,20 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     // 通话中/振铃中离线 → 离开房间并通知他人
     handleMemberLeave(socket.id, 'offline');
+    // 屏幕共享清理：共享者离线 → 全员结束；观看者离线 → 通知共享者
+    if (screenShare) {
+      if (screenShare.presenterId === socket.id) {
+        io.emit('system_message', {
+          type: 'screen', nickname,
+          text: `${nickname} 的屏幕共享已结束`,
+          timestamp: Date.now()
+        });
+        endScreenShare('offline');
+      } else if (screenShare.viewers.delete(socket.id)) {
+        const presenter = io.sockets.sockets.get(screenShare.presenterId);
+        if (presenter) presenter.emit('ss_viewer_left', { viewerId: socket.id });
+      }
+    }
     onlineUsers.delete(socket.id);
     // 清理光标状态并通知他人移除
     cursorColors.delete(socket.id);

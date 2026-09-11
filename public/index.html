@@ -4,6 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>局域网聊天室</title>
+  <script>
+    // 主题初始化（须在样式表之前执行，避免首屏闪烁）
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('localsend-theme'); } catch (e) { /* ignore */ }
+      if (t !== 'dark' && t !== 'light') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -17,10 +28,20 @@
           <button class="tab active" id="tabChat" type="button">聊天</button>
           <button class="tab" id="tabShare" type="button">共享文件</button>
           <button class="tab" id="tabBoard" type="button">白板</button>
+          <button class="tab" id="tabScreen" type="button">屏幕共享</button>
         </nav>
         <span class="badge" id="connStatus">连接中…</span>
       </div>
       <div class="topbar-right">
+        <button class="theme-toggle" id="themeToggle" type="button" title="切换深色 / 浅色模式">
+          <svg class="theme-icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+          <svg class="theme-icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+        </button>
         <span class="members-label">在线 <span id="onlineCount">0</span> 人</span>
         <span class="my-name editable" id="myName" title="点击修改昵称">—</span>
         <input class="my-name-input" id="myNameInput" maxlength="20" hidden>
@@ -127,6 +148,33 @@
         <div class="board-canvas-wrap" id="boardWrap">
           <canvas id="boardCanvas"></canvas>
         </div>
+      </div>
+    </main>
+
+    <!-- 屏幕共享面板 -->
+    <main class="main screen-main" id="screenView" hidden>
+      <div class="share-panel screen-panel">
+        <div class="screen-toolbar">
+          <div class="screen-status" id="ssStatus">当前没有人共享屏幕</div>
+          <div class="screen-actions">
+            <button class="share-primary-btn" id="ssStartBtn" type="button">共享我的屏幕</button>
+            <button class="tool-btn danger" id="ssStopBtn" type="button" hidden>停止共享</button>
+            <button class="share-primary-btn" id="ssWatchBtn" type="button" hidden>观看共享</button>
+            <button class="tool-btn" id="ssUnwatchBtn" type="button" hidden>退出观看</button>
+          </div>
+        </div>
+        <div class="screen-stage" id="ssStage">
+          <video id="ssVideo" autoplay playsinline hidden></video>
+          <div class="screen-empty" id="ssEmpty">
+            还没有人共享屏幕<br>
+            <small>点「共享我的屏幕」，把你的整个屏幕 / 某个窗口 / 浏览器标签页实时播给大家</small>
+          </div>
+        </div>
+        <div class="screen-viewers" id="ssViewersBox" hidden>
+          <span class="sidebar-title">观看者（<span id="ssViewerCount">0</span>）</span>
+          <div class="screen-viewer-chips" id="ssViewerChips"></div>
+        </div>
+        <div class="upload-hint" id="ssHint"></div>
       </div>
     </main>
 
@@ -237,5 +285,6 @@
   <script src="client.js"></script>
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>
+  <script src="screen-share.js"></script>
 </body>
 </html>
