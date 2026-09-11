@@ -49,6 +49,50 @@
   const callActionBar = document.getElementById('callActionBar');
   const callSelectedBtn = document.getElementById('callSelectedBtn');
   const callSelectionClearBtn = document.getElementById('callSelectionClearBtn');
+  // 移动端
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const drawerBackdrop = document.getElementById('drawerBackdrop');
+  const mobileRoomBar = document.getElementById('mobileRoomBar');
+  const mobileRoomList = document.getElementById('mobileRoomList');
+
+  function isMobile() {
+    return window.innerWidth <= 720;
+  }
+
+  // 移动端：检测宽度，控制 ☰ 按钮 / 底部房间栏 / 抽屉初始态
+  function applyMobileLayout() {
+    const mobile = isMobile();
+    if (sidebarToggle) sidebarToggle.hidden = !mobile;
+    if (mobileRoomBar) mobileRoomBar.hidden = !mobile;
+    if (!mobile) closeDrawer();
+  }
+
+  // 用 matchMedia 与 CSS 媒体查询严格同步（Edge/Chrome 设备模拟不触发 resize，
+  // 但媒体查询状态变化必然触发 change；与 CSS 断点保持一致）
+  const mobileMQ = window.matchMedia ? window.matchMedia('(max-width: 720px)') : null;
+  function syncMobileLayout() {
+    applyMobileLayout();
+  }
+
+  function openDrawer() {
+    const sb = document.querySelector('.sidebar');
+    if (!sb) return;
+    sb.classList.add('open');
+    if (drawerBackdrop) drawerBackdrop.hidden = false;
+  }
+
+  function closeDrawer() {
+    const sb = document.querySelector('.sidebar');
+    if (sb) sb.classList.remove('open');
+    if (drawerBackdrop) drawerBackdrop.hidden = true;
+  }
+
+  function toggleDrawer() {
+    const sb = document.querySelector('.sidebar');
+    if (sb && sb.classList.contains('open')) closeDrawer();
+    else openDrawer();
+  }
+
 
   const NICK_STORAGE_KEY = 'localsend-nickname';
   let myNickname = '';
@@ -1073,7 +1117,43 @@
     return room && room.name ? room.name : '群聊';
   }
 
-  // 渲染右侧房间列表（公共房 + 我加入的群聊房）
+  // 渲染单个房间项（共用：桌面 sidebar 的完整项 + 移动底部栏的紧凑项）
+  function createRoomItemEl(r) {
+    const li = document.createElement('li');
+    li.className = 'room-item' + (currentRoom === r.id ? ' active' : '');
+    li.dataset.room = r.id;
+    const unread = roomUnread.get(r.id) || 0;
+    const membersText = (r.members || []).map((m) => m.nickname).join('、');
+    li.innerHTML =
+      `<span class="room-name">${escapeHtml(roomDisplayName(r))}</span>` +
+      `<span class="room-members" title="${escapeHtml(membersText)}">${escapeHtml((r.members || []).length + '人')}</span>` +
+      `<span class="room-unread" data-role="unread"${unread ? '' : ' hidden'}>${unread}</span>` +
+      `<button class="room-leave" data-role="leave" title="退出/解散群聊">✕</button>`;
+    li.addEventListener('click', (e) => {
+      if (e.target.closest('[data-role="leave"]')) {
+        e.stopPropagation();
+        leaveRoom(r.id);
+        return;
+      }
+      switchRoom(r.id);
+    });
+    return li;
+  }
+
+  // 移动底部栏的紧凑房间项（只有名称 + 未读）
+  function createMobileRoomItemEl(r) {
+    const li = document.createElement('li');
+    li.className = 'mobile-room-item' + (currentRoom === r.id ? ' active' : '');
+    li.dataset.room = r.id;
+    const unread = roomUnread.get(r.id) || 0;
+    li.innerHTML =
+      `<span>${escapeHtml(roomDisplayName(r))}</span>` +
+      (unread ? `<span class="mobile-room-unread" data-role="unread">${unread}</span>` : '');
+    li.addEventListener('click', () => switchRoom(r.id));
+    return li;
+  }
+
+  // 渲染右侧房间列表（公共房 + 我加入的群聊房）+ 移动底部标签栏
   function renderRoomList() {
     const list = document.getElementById('roomList');
     const roomMain = document.getElementById('roomMain');
@@ -1083,30 +1163,24 @@
     const old = list.querySelectorAll('.room-item[data-room^="g"]');
     old.forEach((el) => el.remove());
     for (const r of myRooms) {
-      const li = document.createElement('li');
-      li.className = 'room-item' + (currentRoom === r.id ? ' active' : '');
-      li.dataset.room = r.id;
-      const unread = roomUnread.get(r.id) || 0;
-      const membersText = (r.members || []).map((m) => m.nickname).join('、');
-      li.innerHTML =
-        `<span class="room-name">${escapeHtml(roomDisplayName(r))}</span>` +
-        `<span class="room-members" title="${escapeHtml(membersText)}">${escapeHtml((r.members || []).length + '人')}</span>` +
-        `<span class="room-unread" data-role="unread"${unread ? '' : ' hidden'}>${unread}</span>` +
-        `<button class="room-leave" data-role="leave" title="退出/解散群聊">✕</button>`;
-      li.addEventListener('click', (e) => {
-        if (e.target.closest('[data-role="leave"]')) {
-          e.stopPropagation();
-          leaveRoom(r.id);
-          return;
-        }
-        switchRoom(r.id);
-      });
-      list.appendChild(li);
+      list.appendChild(createRoomItemEl(r));
+    }
+    // 移动底部标签栏：公共房 + 群聊房
+    if (mobileRoomList) {
+      mobileRoomList.innerHTML = '';
+      const mainItem = document.createElement('li');
+      mainItem.className = 'mobile-room-item' + (currentRoom === 'main' ? ' active' : '');
+      mainItem.dataset.room = 'main';
+      const mainUnread = roomUnread.get('main') || 0;
+      mainItem.innerHTML = `<span>💬 公共房</span>` + (mainUnread ? `<span class="mobile-room-unread" data-role="unread">${mainUnread}</span>` : '');
+      mainItem.addEventListener('click', () => switchRoom('main'));
+      mobileRoomList.appendChild(mainItem);
+      for (const r of myRooms) mobileRoomList.appendChild(createMobileRoomItemEl(r));
     }
     updateRoomUnreadBadge(currentRoom);
   }
 
-  // 房间未读角标更新（含顶部 tab 红点联动）
+  // 房间未读角标更新（桌面列表 + 移动底部栏 + 顶部 tab 红点联动）
   function updateRoomUnreadBadge(room) {
     const list = document.getElementById('roomList');
     const item = list.querySelector(`.room-item[data-room="${CSS.escape(room)}"]`);
@@ -1115,6 +1189,21 @@
     if (badge) {
       badge.textContent = n;
       badge.hidden = n === 0;
+    }
+    // 移动底部栏角标
+    if (mobileRoomList) {
+      const mItem = mobileRoomList.querySelector(`.mobile-room-item[data-room="${CSS.escape(room)}"]`);
+      const mBadge = mItem && mItem.querySelector('[data-role="unread"]');
+      if (mItem) {
+        if (n && mBadge) mBadge.textContent = n;
+        else if (n && !mBadge) {
+          const b = document.createElement('span');
+          b.className = 'mobile-room-unread';
+          b.dataset.role = 'unread';
+          b.textContent = n;
+          mItem.appendChild(b);
+        } else if (!n && mBadge) mBadge.remove();
+      }
     }
   }
 
@@ -1127,8 +1216,12 @@
     msgStore.clear();
     // 更新房间列表 active
     document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
+    if (mobileRoomList) {
+      mobileRoomList.querySelectorAll('.mobile-room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
+    }
     updateRoomUnreadBadge(room);
     updateRoomTitlebar();
+    closeDrawer(); // 移动端：切房后收起抽屉
     // 加载该房间历史
     socket.emit('room_history', { room }, (res) => {
       if (res && res.ok) {
@@ -1330,6 +1423,21 @@
     roomMainEl._roomClickBound = true;
   }
 
+  // ---------- 移动端布局：抽屉开关 + 底部房间栏 ----------
+  if (sidebarToggle) sidebarToggle.addEventListener('click', toggleDrawer);
+  if (drawerBackdrop) drawerBackdrop.addEventListener('click', closeDrawer);
+
+  // 初始化 + 窗口尺寸变化时刷新移动端布局
+  applyMobileLayout();
+  // 优先用 matchMedia：与 CSS 媒体查询严格同步（设备模拟不触发 resize 也能生效）
+  if (mobileMQ && mobileMQ.addEventListener) {
+    mobileMQ.addEventListener('change', () => applyMobileLayout());
+  }
+  // resize 兜底（普通拖拽窗口 / 老浏览器）
+  window.addEventListener('resize', () => {
+    applyMobileLayout();
+  });
+
   // 更新房间标题栏在页面加载后
   window.addEventListener('load', updateRoomTitlebar);
 
@@ -1404,6 +1512,32 @@
     e.preventDefault();
     openCtxMenu(e.clientX, e.clientY, data);
   });
+
+  // 移动端长按消息呼出同一菜单（手机上无右键）
+  let longPressTimer = null;
+  let longPressFired = false;
+  chatArea.addEventListener('touchstart', (e) => {
+    const touch = e.touches && e.touches[0];
+    if (!touch) return;
+    const msgEl = e.target.closest('.msg[data-mid]');
+    if (!msgEl) return;
+    const data = msgStore.get(msgEl.dataset.mid);
+    if (!data || data.recalled) return;
+    const tx = touch.clientX, ty = touch.clientY;
+    longPressFired = false;
+    longPressTimer = setTimeout(() => {
+      longPressFired = true;
+      e.preventDefault();
+      openCtxMenu(tx, ty, data);
+    }, 500);
+  }, { passive: false });
+  chatArea.addEventListener('touchend', () => { clearTimeout(longPressTimer); });
+  chatArea.addEventListener('touchmove', () => { clearTimeout(longPressTimer); });
+  chatArea.addEventListener('touchcancel', () => { clearTimeout(longPressTimer); });
+  // 长按后拦截后续 click，避免菜单刚弹出又被 document click 关掉
+  chatArea.addEventListener('click', (e) => {
+    if (longPressFired) { longPressFired = false; e.stopPropagation(); }
+  }, true);
 
   function openCtxMenu(x, y, data) {
     closeCtxMenu();
@@ -1668,6 +1802,64 @@
       uploadFile(fileInput.files[0]);
       fileInput.value = '';
     }
+  });
+
+  // ---------- 粘贴截图即发送（方案 A：桌面端） ----------
+  // 剪贴板含图片时接管并直接发送；纯文本粘贴不受影响（不 preventDefault）；
+  // 群聊弹窗打开时不接管，避免误发。
+  // 注意：Linux（Wayland / 部分截图工具）下 paste 事件的 clipboardData.items
+  // 常常读不到图片项（Chromium 的 Linux 剪贴板映射问题，微信等原生应用不受影响），
+  // 因此兜底用 navigator.clipboard.read() 直接读剪贴板图片（HTTPS 可用，首次请求授权）。
+  function pastedImageName(type) {
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+    const ext = String(type || 'image/png').split('/')[1] || 'png';
+    return `粘贴图片-${stamp}.${ext.replace(/[^a-z0-9]/gi, '') || 'png'}`;
+  }
+  async function readClipboardImageFallback() {
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') return null;
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imgType = (item.types || []).find((t) => t.indexOf('image/') === 0);
+        if (imgType) return await item.getType(imgType);
+      }
+    } catch (_) { /* 无权限/被拒绝/不支持：返回 null 走诊断 */ }
+    return null;
+  }
+  document.addEventListener('paste', (e) => {
+    if (groupModal && !groupModal.hidden) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+          e.preventDefault();
+          const blob = item.getAsFile && item.getAsFile();
+          if (blob) {
+            uploadFile(new File([blob], pastedImageName(item.type), { type: item.type, lastModified: Date.now() }));
+            return;
+          }
+        }
+      }
+    }
+    // 兜底：items 里没读到图片（Linux 常见）→ 用 Clipboard API 异步重读
+    readClipboardImageFallback().then((blob) => {
+      if (blob) {
+        uploadFile(new File([blob], pastedImageName(blob.type), { type: blob.type, lastModified: Date.now() }));
+        return;
+      }
+      // 诊断：剪贴板确实有文件类内容但都读不到图片，提示用户（帮助排查 Linux 剪贴板问题）
+      if (items) {
+        const fileItems = Array.from(items).filter((it) => it.kind === 'file');
+        if (fileItems.length) {
+          const types = fileItems.map((it) => it.type || '(无类型)').join(' / ');
+          console.warn('[粘贴] 剪贴板有文件但未识别为图片:', types);
+          setHint('剪贴板内容浏览器无法读取为图片，可试试：菜单-设置-检查剪贴板权限，或用「+」选择图片', 'error');
+        }
+      }
+    });
   });
 
   // 拖拽上传（拖到聊天区）

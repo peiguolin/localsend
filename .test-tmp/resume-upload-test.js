@@ -27,7 +27,7 @@ function check(name, cond, extra) {
 function connectSocket() {
   return new Promise((resolve, reject) => {
     const s = io(BASE, { rejectUnauthorized: false, transports: ['websocket'] });
-    s.once('welcome', (w) => resolve({ s, id: w.id, nickname: w.nickname }));
+    s.once('welcome', (w) => resolve({ s, id: w.id, nickname: w.nickname, history: w.history || [] }));
     s.on('connect_error', reject);
     setTimeout(() => reject(new Error('connect timeout')), 5000);
   });
@@ -172,6 +172,21 @@ async function main() {
     check('小文件上传成功', smallRes.ok === true);
     const files2 = listUploadFiles(TEST_UPLOADS);
     check('pdf 归档到 document/<日期>/', files2.includes(`document/${dateDir}/${smallRes.storedName}`), files2.join(', '));
+    // 回归保护：普通 /upload 的 relPath 必须含文件名，否则 /download 解析不到文件（历史 bug）
+    const smallDl = await fetch(BASE + '/download/' + smallRes.storedName);
+    const smallBuf = Buffer.from(await smallDl.arrayBuffer());
+    check('小文件下载取回内容一致', smallDl.status === 200 && smallBuf.toString() === 'hello pdf content', `HTTP ${smallDl.status}`);
+    // 回归保护：历史遗留旧格式 meta（relPath 只有目录、缺文件名）也必须能下载（resolveStoredFile 兼容）
+    const metaPath = path.join(TEST_UPLOADS, '.meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const savedRel = meta[smallRes.storedName].relPath;
+    meta[smallRes.storedName].relPath = savedRel.split('/').slice(0, 2).join('/'); // 去掉文件名 → 纯目录
+    fs.writeFileSync(metaPath, JSON.stringify(meta));
+    const oldDl = await fetch(BASE + '/download/' + smallRes.storedName);
+    const oldBuf = Buffer.from(await oldDl.arrayBuffer());
+    check('旧格式 relPath（仅目录）仍可下载取回', oldDl.status === 200 && oldBuf.toString() === 'hello pdf content', `HTTP ${oldDl.status}`);
+    meta[smallRes.storedName].relPath = savedRel; // 还原
+    fs.writeFileSync(metaPath, JSON.stringify(meta));
 
     console.log('【图片分片上传后预览可用】');
     const imgData = Buffer.from(
@@ -185,6 +200,39 @@ async function main() {
     check('图片预览可访问', imgResp.status === 200 && (imgResp.headers.get('content-type') || '').includes('image/png'));
     const files3 = listUploadFiles(TEST_UPLOADS);
     check('png 归档到 image/<日期>/', files3.includes(`image/${dateDir}/${iComp.storedName}`));
+
+    console.log('【刷新后历史图片带 imageUrl（storedName 已落库）】');
+    const connR = await connectSocket();
+    const imgHist = (connR.history || []).find((m) => m.type === 'image' && m.storedName === iComp.storedName);
+    check('刷新后历史图片消息带 storedName+imageUrl', !!imgHist && !!imgHist.imageUrl, JSON.stringify(imgHist));
+    if (imgHist && imgHist.imageUrl) {
+      const r = await fetch(BASE + imgHist.imageUrl);
+      check('刷新后 /images 预览 200', r.status === 200, `HTTP ${r.status}`);
+    }
+    connR.s.close();
+
+    console.log('【老消息恢复：清空 stored_name 后重连自动找回（fileName+时间戳匹配 meta）】');
+    {
+      const Database = require('better-sqlite3');
+      const db = new Database(TEST_DB);
+      db.prepare('UPDATE messages SET stored_name = NULL WHERE type = ?').run('image');
+      db.close();
+    }
+    const connR2 = await connectSocket();
+    const imgHist2 = (connR2.history || []).find((m) => m.type === 'image' && m.fileName === '截图.png');
+    check('老消息恢复 storedName 成功', !!imgHist2 && !!imgHist2.storedName && !!imgHist2.imageUrl, JSON.stringify(imgHist2));
+    if (imgHist2 && imgHist2.imageUrl) {
+      const r = await fetch(BASE + imgHist2.imageUrl);
+      check('老消息恢复后 /images 预览 200', r.status === 200, `HTTP ${r.status}`);
+    }
+    connR2.s.close();
+    {
+      const Database = require('better-sqlite3');
+      const db = new Database(TEST_DB);
+      const row = db.prepare("SELECT stored_name AS sn FROM messages WHERE type = 'image'").get();
+      check('恢复结果已回写 DB', !!row && !!row.sn, row && row.sn ? row.sn : '(空)');
+      db.close();
+    }
 
     console.log('【分片不完整 → complete 拒绝】');
     const f2 = '未完成.zip';

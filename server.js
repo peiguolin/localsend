@@ -207,7 +207,10 @@ function resolveStoredFile(raw) {
   const meta = loadMeta();
   const rel = meta[raw] && meta[raw].relPath;
   const candidates = [];
-  if (rel && rel !== raw) candidates.push(rel);
+  if (rel && rel !== raw) {
+    candidates.push(rel); // 新格式：relPath 已是完整相对路径（含文件名）
+    candidates.push(path.join(rel, raw)); // 旧格式：relPath 只有归档目录，拼上文件名
+  }
   candidates.push(raw); // 兼容旧版平铺在 uploads 根目录的文件
   const uploadRoot = path.resolve(UPLOAD_DIR);
   for (const c of candidates) {
@@ -216,6 +219,45 @@ function resolveStoredFile(raw) {
     if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
   }
   return null;
+}
+
+// 给历史/搜索返回的消息补上文件/图片的下载/预览 URL（DB 只存 storedName，URL 由它推导）
+function decorateMsgUrls(msg) {
+  if (!msg || !msg.storedName) return msg;
+  msg.downloadUrl = `/download/${encodeURIComponent(msg.storedName)}`;
+  if (msg.type === 'image') msg.imageUrl = `/images/${encodeURIComponent(msg.storedName)}`;
+  return msg;
+}
+
+// 老消息恢复：早期版本没把 storedName 落库，刷新后历史里的文件/图片消息没有 URL。
+// 用「原始文件名 + 上传时间戳」去 meta.json 匹配回 storedName，并回写 DB 一劳永逸。
+function restoreStoredNames(msgs) {
+  if (!Array.isArray(msgs)) return msgs;
+  let meta = null;
+  const need = msgs.filter((m) => (m.type === 'image' || m.type === 'file') && !m.storedName && m.fileName);
+  if (!need.length) return msgs;
+  try { meta = loadMeta(); } catch (_) { meta = {}; }
+  const byNameTs = [];
+  for (const raw of Object.keys(meta || {})) {
+    const e = meta[raw];
+    if (e && e.originalName) byNameTs.push({ stored: raw, name: e.originalName, ts: Number(e.uploadedAt) || 0 });
+  }
+  for (const m of need) {
+    // 精确匹配（同名 + 同时间戳）优先，放宽到 ±60s 内同名
+    let hit = byNameTs.find((x) => x.name === m.fileName && Math.abs(x.ts - m.timestamp) <= 5000) ||
+              byNameTs.find((x) => x.name === m.fileName && Math.abs(x.ts - m.timestamp) <= 60000);
+    if (hit) {
+      m.storedName = hit.stored;
+      try { store.updateMessageStoredName(m.id, hit.stored); } catch (_) { /* 回写失败不阻塞 */ }
+      decorateMsgUrls(m);
+    }
+  }
+  return msgs;
+}
+
+// 统一处理历史/搜索结果：恢复老消息 storedName + 补 URL
+function decorateHistory(msgs) {
+  return restoreStoredNames(msgs).map(decorateMsgUrls);
 }
 
 // Content-Disposition（RFC 5987，支持中文文件名）
@@ -259,7 +301,8 @@ app.post('/upload', upload.single('file'), (req, res) => {
   const originalName = req.file.decodedName || req.file.originalname || storedName;
   const size = req.file.size;
   const downloadUrl = `/download/${encodeURIComponent(storedName)}`;
-  const relPath = req.file.relPath || storedName;
+  // req.file.relPath 是归档目录（如 text/20260911），必须拼上文件名，否则下载解析不到文件
+  const relPath = req.file.relPath ? path.join(req.file.relPath, storedName) : storedName;
 
   // 记录原始文件名 + 归档相对路径，供下载时还原 Content-Disposition / 定位文件
   saveMeta(storedName, originalName, size, relPath);
@@ -1012,7 +1055,7 @@ io.on('connection', (socket) => {
 
   // 通知本人（id 用于 WebRTC 通话信令定位）；附带最近历史消息 + 我加入的群聊房
   let history = [];
-  try { history = store.loadMessages(200, 'main'); } catch (_) { /* 历史不可用 */ }
+  try { history = decorateHistory(store.loadMessages(200, 'main')); } catch (_) { /* 历史不可用 */ }
   socket.emit('welcome', { id: socket.id, nickname, online: onlineUsers.size, history, rooms: myRooms });
   // 推送当前共享列表
   socket.emit('shares_update', Array.from(shares.values()).map(publicShareInfo));
@@ -1167,7 +1210,7 @@ io.on('connection', (socket) => {
       return cb({ ok: false, error: '你不在该房间中' });
     }
     try {
-      const history = store.loadMessages(200, room);
+      const history = decorateHistory(store.loadMessages(200, room));
       cb({ ok: true, room, history });
     } catch (e) {
       cb({ ok: false, error: e.message });
@@ -1254,7 +1297,7 @@ io.on('connection', (socket) => {
         room,
         limit: Math.min(Number((data && data.limit) || 100), 500)
       });
-      cb({ ok: true, results });
+      cb({ ok: true, results: decorateHistory(results) });
     } catch (e) {
       cb({ ok: false, error: e.message });
     }

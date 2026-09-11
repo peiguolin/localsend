@@ -34,6 +34,11 @@
         <span class="badge" id="connStatus">连接中…</span>
       </div>
       <div class="topbar-right">
+        <button class="sidebar-toggle" id="sidebarToggle" type="button" title="成员与房间" hidden>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
         <button class="theme-toggle" id="themeToggle" type="button" title="切换深色 / 浅色模式">
           <svg class="theme-icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
@@ -233,6 +238,11 @@
       </div>
     </main>
 
+    <!-- 移动端：房间标签栏（横滑切换，贴底部输入栏上方） -->
+    <nav class="mobile-roombar" id="mobileRoomBar" hidden>
+      <ul class="mobile-room-list" id="mobileRoomList"></ul>
+    </nav>
+
     <!-- 底部输入区 -->
     <footer class="inputbar">
       <div class="quote-preview" id="quotePreview" hidden></div>
@@ -356,6 +366,9 @@
       </div>
     </div>
   </div>
+
+  <!-- 移动端：抽屉遮罩（fixed，置于 body 末尾） -->
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="vendor/highlight.min.js"></script>

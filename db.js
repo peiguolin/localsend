@@ -39,6 +39,7 @@ function init() {
       text TEXT,
       file_name TEXT,
       file_size INTEGER,
+      stored_name TEXT,
       quote_json TEXT,
       recalled INTEGER NOT NULL DEFAULT 0,
       timestamp INTEGER NOT NULL
@@ -72,6 +73,10 @@ function init() {
   if (!cols.some((c) => c.name === 'client_id')) {
     db.exec(`ALTER TABLE messages ADD COLUMN client_id TEXT`);
   }
+  // 兼容旧库：缺 stored_name 列时补上（文件/图片消息刷新后恢复 URL 需要）
+  if (!cols.some((c) => c.name === 'stored_name')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN stored_name TEXT`);
+  }
   return db;
 }
 
@@ -84,8 +89,8 @@ function getDb() {
 function insertMessage(msg) {
   const d = getDb();
   d.prepare(`
-    INSERT INTO messages (msg_id, room, type, nickname, sender_id, client_id, text, file_name, file_size, quote_json, recalled, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (msg_id, room, type, nickname, sender_id, client_id, text, file_name, file_size, stored_name, quote_json, recalled, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id || null,
     msg.room || 'main',
@@ -96,11 +101,21 @@ function insertMessage(msg) {
     msg.text || null,
     msg.fileName || null,
     msg.fileSize || null,
+    msg.storedName || null,
     msg.quote ? JSON.stringify(msg.quote) : null,
     msg.recalled ? 1 : 0,
     msg.timestamp || Date.now()
   );
   return msg;
+}
+
+// 老消息恢复：把解析出的 storedName 回写 DB（按 msg_id，兜底按数字 id 主键）
+function updateMessageStoredName(id, storedName) {
+  const d = getDb();
+  const n = d.prepare(`UPDATE messages SET stored_name = ? WHERE msg_id = ?`).run(storedName, String(id));
+  if (n.changes === 0) {
+    d.prepare(`UPDATE messages SET stored_name = ? WHERE id = ?`).run(storedName, Number(id) || 0);
+  }
 }
 
 // 读取历史：倒序取最近 N 条，再正序返回
@@ -109,7 +124,7 @@ function loadMessages(limit, room) {
   const rows = d.prepare(`
     SELECT * FROM (
       SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName,
-             file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp
+             file_size AS fileSize, stored_name AS storedName, quote_json AS quoteJson, recalled, timestamp
       FROM messages
       WHERE room = ?
       ORDER BY id DESC
@@ -126,6 +141,7 @@ function loadMessages(limit, room) {
     text: r.text,
     fileName: r.fileName,
     fileSize: r.fileSize,
+    storedName: r.storedName || null,
     quote: r.quoteJson ? JSON.parse(r.quoteJson) : null,
     recalled: !!r.recalled,
     timestamp: r.timestamp
@@ -182,7 +198,7 @@ function searchMessages(opts) {
   if (to) { where.push('timestamp <= ?'); args.push(Number(to)); }
   const rows = d.prepare(`
     SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName,
-           file_size AS fileSize, quote_json AS quoteJson, recalled, timestamp
+           file_size AS fileSize, stored_name AS storedName, quote_json AS quoteJson, recalled, timestamp
     FROM messages WHERE ${where.join(' AND ')}
     ORDER BY id DESC LIMIT ?
   `).all(...args, Number(limit) || 100);
@@ -196,6 +212,7 @@ function searchMessages(opts) {
     text: r.text,
     fileName: r.fileName,
     fileSize: r.fileSize,
+    storedName: r.storedName || null,
     quote: r.quoteJson ? JSON.parse(r.quoteJson) : null,
     recalled: !!r.recalled,
     timestamp: r.timestamp
@@ -345,7 +362,7 @@ function deleteRoom(id) {
 module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
-  insertMessage, loadMessages, getMessageById, recallMessage, searchMessages, stats, clearHistory, trimMessages,
+  insertMessage, loadMessages, getMessageById, recallMessage, searchMessages, stats, clearHistory, trimMessages, updateMessageStoredName,
   insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes,
   createRoom, loadRooms, updateRoom, deleteRoom
 };
