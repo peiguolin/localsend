@@ -461,7 +461,6 @@
   <script src="/socket.io/socket.io.js"></script>
   <script src="vendor/highlight.min.js"></script>
   <script src="vendor/lunar.js"></script>
-  <script src="vendor/emoji-data.js"></script>
   <script src="client.js"></script>
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>

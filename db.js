@@ -1,11 +1,13 @@
-// 数据持久化层：SQLite（better-sqlite3）
+// 数据持久化层：SQLite（Node 内置 node:sqlite，替代 better-sqlite3）
 // 职责：自动建库（data/chat.db）、建表、聊天消息/白板笔迹的读写、
 //       搜索、统计、导出、清空。全部同步 API（局域网规模毫秒级，无需异步）。
+// 说明：node:sqlite 为 Node 22.5+ 内置模块（实验性，启动时有 ExperimentalWarning），
+//       免去 better-sqlite3 原生编译依赖；库文件格式与 better-sqlite3 完全兼容。
 'use strict';
 
 const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = path.join(__dirname, 'data');
 // 库文件路径可用环境变量覆盖（测试用独立库，避免污染真实数据）
@@ -24,9 +26,9 @@ function init() {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   } catch (_) { /* 目录已存在 */ }
-  db = new Database(DB_FILE);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
+  db = new DatabaseSync(DB_FILE);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

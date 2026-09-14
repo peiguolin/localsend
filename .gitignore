@@ -1,5 +1,6 @@
 # 依赖
 node_modules/
+node_modules_old/
 
 # 运行时数据（上传文件与元数据，不进版本库）
 uploads/

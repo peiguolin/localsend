@@ -2954,102 +2954,93 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
   overflow: hidden;
 }
 
-/* ---------- 表情选择器 ---------- */
+/* ===== 表情选择器 ===== */
 .emoji-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  flex-shrink: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border, rgba(0,0,0,0.12));
+  background: var(--bg);
+  color: var(--text, #1f2328);
   border-radius: 8px;
-  background: var(--panel);
-  color: var(--text-secondary);
+  padding: 8px 10px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: border-color .15s, color .15s, background .15s;
 }
-.emoji-btn:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
-.emoji-btn svg { display: block; }
-
+.emoji-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .emoji-panel {
   position: absolute;
-  left: 0;
   bottom: calc(100% + 8px);
+  left: 0;
   z-index: 80;
   width: 368px;
-  max-width: calc(100vw - 24px);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  padding: 8px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg);
+  border: 1px solid var(--border, rgba(0,0,0,0.14));
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.18);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
-/* hidden 属性要能真正隐藏面板：display:flex 会覆盖 UA 的 [hidden]{display:none}，必须显式补回 */
-.emoji-panel[hidden] { display: none; }
-.emoji-search-row { padding: 0 2px; }
+.emoji-search-row { padding: 8px 8px 4px; }
 .emoji-search {
   width: 100%;
   box-sizing: border-box;
-  height: 32px;
-  padding: 0 10px;
+  padding: 6px 10px;
   font-size: 13px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border, rgba(0,0,0,0.12));
   border-radius: 8px;
   background: var(--bg);
-  color: var(--text);
+  color: var(--text, #1f2328);
   outline: none;
 }
-.emoji-search:focus { border-color: var(--accent); }
+.emoji-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .emoji-tabs {
   display: flex;
   gap: 2px;
-  padding: 0 2px;
+  padding: 6px 8px;
   overflow-x: auto;
+  border-bottom: 1px solid var(--border, rgba(0,0,0,0.08));
+  scrollbar-width: thin;
 }
 .emoji-tab {
-  flex: 1 0 auto;
-  min-width: 36px;
-  height: 32px;
+  flex: 0 0 auto;
   border: none;
-  border-radius: 8px;
   background: transparent;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
+  padding: 5px 7px;
+  border-radius: 6px;
   cursor: pointer;
-  color: var(--text-secondary);
+  opacity: .5;
 }
 .emoji-tab:hover { background: var(--accent-soft); }
-.emoji-tab.active { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.emoji-tab.active { opacity: 1; background: var(--accent-soft); }
 .emoji-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 2px;
-  max-height: 240px;
+  padding: 6px;
   overflow-y: auto;
-  padding: 2px;
+  max-height: 240px;
 }
 .emoji-item {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 36px;
-  padding: 0;
   border: none;
-  border-radius: 8px;
   background: transparent;
   font-size: 22px;
-  line-height: 1;
+  line-height: 1.4;
+  padding: 4px 2px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.1s;
+  text-align: center;
 }
 .emoji-item:hover { background: var(--accent-soft); }
 .emoji-empty {
-  padding: 24px 0;
+  grid-column: 1 / -1;
   text-align: center;
-  color: var(--text-faint);
+  color: var(--text-muted, #888);
   font-size: 13px;
+  padding: 18px 0;
 }
+
