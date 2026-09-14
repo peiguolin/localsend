@@ -100,6 +100,7 @@
   // ---------- 群聊房间状态 ----------
   let currentRoom = 'main';      // 当前正在查看的房间（默认公共房）
   let myRooms = [];              // 我加入的群聊房 [{id,name,members,...}]
+  let isLocalHost = false;       // 是否为宿主机连接（welcome 下发；决定数据管理操作可见性）
   const roomUnread = new Map();  // room -> 未读数（'main' 也统计）
   // ---------- 群聊房间状态（end） ----------
   // 持久身份 myClientId 已在 IIFE 顶部初始化（握手需要）
@@ -1064,6 +1065,7 @@
   socket.on('welcome', (data) => {
     myNickname = data.nickname;
     myId = data.id || '';
+    isLocalHost = !!data.isLocal;
     myNameEl.textContent = myNickname;
     renderSystemMsg({
       text: `你已加入聊天室，你的昵称是 ${myNickname}`
@@ -1245,20 +1247,48 @@
     });
   }
 
-  // 顶部标题栏：显示当前房间名（切换房间时刷新）
+  // 顶部标题栏：显示当前房间名（切换房间时刷新）；房主/宿主机显示「清空记录」
   function updateRoomTitlebar() {
     let title = '公共房';
     let hint = '所有人都在这里聊天';
+    let canClear = false;
     if (currentRoom !== 'main') {
       const r = myRooms.find((x) => x.id === currentRoom);
       title = roomDisplayName(r);
       hint = r ? (r.members || []).map((m) => m.nickname).join('、') : '';
+      canClear = isLocalHost || !!(r && r.ownerClientId && r.ownerClientId === myClientId);
     }
     const bar = document.querySelector('.room-titlebar .rt-name');
     if (bar) bar.textContent = title;
     const hintEl = document.getElementById('roomTitleHint');
     if (hintEl) hintEl.textContent = hint;
+    roomClearBtn.hidden = !canClear;
   }
+
+  // 清空本房间聊天记录（房主或宿主机；二次确认）
+  const roomClearBtn = document.getElementById('roomClearBtn');
+  roomClearBtn.addEventListener('click', () => {
+    const r = myRooms.find((x) => x.id === currentRoom);
+    const label = r ? roomDisplayName(r) : '本房间';
+    if (!confirm(`确定清空「${label}」的全部聊天记录吗？\n此操作不可恢复（文件本体保留在宿主机）。`)) return;
+    socket.emit('room_history_clear', { room: currentRoom }, (res) => {
+      if (!res || !res.ok) setHint((res && res.error) || '清空失败', 'error');
+    });
+  });
+
+  // 房间历史被清空（房主或宿主机操作后广播）→ 正在查看该房间则清空本地视图
+  socket.on('room_cleared', (data) => {
+    if (!data || data.room !== currentRoom) return;
+    chatArea.innerHTML = '';
+    msgStore.clear();
+  });
+
+  // 公共房历史被清空（宿主机操作后广播）
+  socket.on('history_cleared', () => {
+    if (currentRoom !== 'main') return;
+    chatArea.innerHTML = '';
+    msgStore.clear();
+  });
 
   // 退出/解散群聊
   function leaveRoom(room) {
@@ -1546,6 +1576,9 @@
     const items = [{ label: '引用回复', fn: () => startQuote(data) }];
     if (data.type === 'text') {
       items.push({ label: '复制文本', fn: () => copyText(data.text) });
+      if (translationAvailable && !mostlyCJK(data.text)) {
+        items.push({ label: '翻译成中文', fn: () => translateMessage(data) });
+      }
     }
     if (isOwnMessage(data) && Date.now() - data.timestamp < 120000) {
       items.push({ label: '撤回', danger: true, fn: () => recallMessage(data.id) });
@@ -1593,6 +1626,66 @@
       }, () => setHint('复制失败', 'error'));
     }
   });
+
+  // ---------- 消息翻译（右键翻译成中文；译文块附在气泡下方，不改原消息） ----------
+  let translationAvailable = false;
+  fetch('/api/translate/status')
+    .then((r) => r.json())
+    .then((j) => { translationAvailable = !!(j && j.available); })
+    .catch(() => { translationAvailable = false; });
+
+  // CJK 占比启发式：已是中文的消息不提供翻译入口
+  function mostlyCJK(text) {
+    const chars = String(text || '').replace(/\s+/g, '');
+    if (!chars.length) return true;
+    let cjk = 0;
+    for (const ch of chars) {
+      const cp = ch.codePointAt(0);
+      if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf)) cjk++;
+    }
+    return cjk / chars.length > 0.3;
+  }
+
+  async function translateMessage(data) {
+    if (!data.id) return;
+    const msgEl = chatArea.querySelector(`[data-mid="${CSS.escape(data.id)}"]`);
+    if (!msgEl) return;
+    // 已有译文块 → 收起/展开切换
+    let block = msgEl.querySelector('.translate-block');
+    if (block) {
+      block.classList.toggle('collapsed');
+      return;
+    }
+    block = document.createElement('div');
+    block.className = 'translate-block';
+    block.title = '再次从右键菜单选择「翻译成中文」可收起/展开';
+    block.innerHTML = '<span class="translate-label">译文</span><span class="translate-text">翻译中…</span>';
+    const bubble = msgEl.querySelector('.msg-bubble');
+    (bubble || msgEl).insertAdjacentElement('afterend', block);
+    // 会话内已有结果直接复用
+    if (data.translationZh) {
+      block.querySelector('.translate-text').textContent = data.translationZh;
+      return;
+    }
+    try {
+      const r = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: data.text, target: 'zh' })
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        data.translationZh = j.translation;
+        block.querySelector('.translate-text').textContent = j.translation;
+      } else {
+        block.querySelector('.translate-text').textContent = (j && j.error) || '翻译失败';
+        block.classList.add('error');
+      }
+    } catch (_) {
+      block.querySelector('.translate-text').textContent = '翻译服务不可用';
+      block.classList.add('error');
+    }
+  }
 
   // ---------- 引用回复（输入栏预览条） ----------
   let quoting = null; // {id, nickname, text}
@@ -1979,6 +2072,11 @@
   window.chatApp = {
     socket,
     utils: { escapeHtml, fmtSize, fmtTime },
-    get nickname() { return myNickname; }
+    get nickname() { return myNickname; },
+    get isLocal() { return isLocalHost; },
+    get rooms() { return myRooms; },
+    get clientId() { return myClientId; },
+    // 供日历"一键拉会"复用：对一批 socketId 发起多人语音通话
+    callTargets: (targetIds) => startCall((targetIds || []).map((id) => ({ id, nickname: '' })))
   };
 })();

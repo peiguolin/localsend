@@ -95,7 +95,11 @@ const socketHandlers = {};
 const emitted = [];
 const ackCalls = [];
 const socketStub = {
-  on(evt, cb) { socketHandlers[evt] = cb; },
+  on(evt, cb) {
+    // 真实 socket 同事件可挂多个监听；链式合并保持 socketHandlers[evt](...) 调用形式
+    const prev = socketHandlers[evt];
+    socketHandlers[evt] = prev ? (...args) => { prev(...args); cb(...args); } : cb;
+  },
   emit(evt, data, cb) {
     // 兼容 emit(evt, cb) 与 emit(evt, data, cb)
     if (typeof data === 'function') { cb = data; data = undefined; }

@@ -35,3 +35,6 @@ Thumbs.db
 
 # 测试用的独立上传目录
 .test-tmp/resume-uploads/
+
+# 本地备份文件
+.test-tmp/*.bak

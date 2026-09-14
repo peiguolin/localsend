@@ -59,6 +59,28 @@ function init() {
       timestamp INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_strokes_room ON strokes(room);
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room TEXT NOT NULL DEFAULT 'main',
+      event_date TEXT NOT NULL,
+      event_time TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      creator_client_id TEXT NOT NULL DEFAULT '',
+      creator_nick TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      remind_minutes INTEGER NOT NULL DEFAULT 0,
+      reminded_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_events_room_date ON events(room, event_date);
+    CREATE TABLE IF NOT EXISTS translations (
+      source_hash TEXT NOT NULL,
+      target TEXT NOT NULL,
+      translation TEXT NOT NULL,
+      engine TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (source_hash, target)
+    );
     CREATE TABLE IF NOT EXISTS rooms (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -73,6 +95,17 @@ function init() {
   if (!cols.some((c) => c.name === 'client_id')) {
     db.exec(`ALTER TABLE messages ADD COLUMN client_id TEXT`);
   }
+  // 兼容旧库：events 缺提醒列时补上（日程提醒功能）
+  try {
+    const evCols = d.prepare(`PRAGMA table_info(events)`).all();
+    if (!evCols.some((c) => c.name === 'remind_minutes')) {
+      db.exec(`ALTER TABLE events ADD COLUMN remind_minutes INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!evCols.some((c) => c.name === 'reminded_at')) {
+      db.exec(`ALTER TABLE events ADD COLUMN reminded_at INTEGER NOT NULL DEFAULT 0`);
+    }
+  } catch (_) { /* events 表尚不存在时由上面的 CREATE 保证结构 */ }
+
   // 兼容旧库：缺 stored_name 列时补上（文件/图片消息刷新后恢复 URL 需要）
   if (!cols.some((c) => c.name === 'stored_name')) {
     db.exec(`ALTER TABLE messages ADD COLUMN stored_name TEXT`);
@@ -244,6 +277,87 @@ function clearHistory(room, includeStrokes) {
   return { messages: r.changes };
 }
 
+// 所有被消息引用的 stored_name 集合（生命周期清扫时判断文件是否仍被引用）
+function listReferencedStoredNames() {
+  const d = getDb();
+  const rows = d.prepare(`SELECT DISTINCT stored_name AS sn FROM messages WHERE stored_name IS NOT NULL AND stored_name != ''`).all();
+  return new Set(rows.map((r) => r.sn));
+}
+
+// 按时间清理过期消息（数据保留策略）；返回删除条数
+function trimMessagesByAge(cutoffTs) {
+  const d = getDb();
+  const r = d.prepare('DELETE FROM messages WHERE timestamp < ?').run(Number(cutoffTs) || 0);
+  return { messages: r.changes };
+}
+
+// ---------- 翻译缓存（按原文哈希共享：同一文本全房间只算一次） ----------
+function getTranslation(sourceHash, target) {
+  const d = getDb();
+  const r = d.prepare('SELECT translation, engine, created_at AS createdAt FROM translations WHERE source_hash = ? AND target = ?')
+    .get(String(sourceHash), String(target));
+  return r || null;
+}
+
+function saveTranslation(sourceHash, target, translation, engine) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO translations (source_hash, target, translation, engine, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (source_hash, target) DO UPDATE SET
+      translation = excluded.translation, engine = excluded.engine, created_at = excluded.created_at
+  `).run(String(sourceHash), String(target), String(translation), String(engine || ''), Date.now());
+}
+
+// ---------- 日历日程 ----------
+function createEvent(ev) {
+  const d = getDb();
+  const r = d.prepare(`
+    INSERT INTO events (room, event_date, event_time, title, note, creator_client_id, creator_nick, created_at, remind_minutes, reminded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(
+    ev.room || 'main', ev.event_date, ev.event_time || '', ev.title,
+    ev.note || '', ev.creator_client_id || '', ev.creator_nick || '', ev.created_at || Date.now(),
+    Number(ev.remind_minutes) || 0
+  );
+  return Number(r.lastInsertRowid);
+}
+
+const EVENT_COLS = `id, room, event_date AS date, event_time AS time, title, note,
+       creator_client_id AS creatorClientId, creator_nick AS creatorNick, created_at AS createdAt,
+       remind_minutes AS remindMinutes, reminded_at AS remindedAt`;
+
+function listEvents(room, fromDate, toDate) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT ${EVENT_COLS}
+    FROM events WHERE room = ? AND event_date >= ? AND event_date <= ?
+    ORDER BY event_date ASC, event_time ASC, id ASC
+  `).all(room || 'main', fromDate, toDate);
+}
+
+function getEvent(id) {
+  const d = getDb();
+  const r = d.prepare(`SELECT ${EVENT_COLS} FROM events WHERE id = ?`).get(Number(id));
+  return r || null;
+}
+
+function deleteEvent(id) {
+  const d = getDb();
+  return d.prepare('DELETE FROM events WHERE id = ?').run(Number(id)).changes;
+}
+
+// 待触发的提醒（已到/未到触发时间由调用方按本地时间计算）
+function listUnfiredReminders() {
+  const d = getDb();
+  return d.prepare(`SELECT ${EVENT_COLS} FROM events WHERE remind_minutes > 0 AND reminded_at = 0`).all();
+}
+
+function markEventReminded(id, ts) {
+  const d = getDb();
+  d.prepare('UPDATE events SET reminded_at = ? WHERE id = ?').run(Number(ts) || Date.now(), Number(id));
+}
+
 // ---------- 白板笔迹 ----------
 function insertStroke(s) {
   const d = getDb();
@@ -363,6 +477,9 @@ module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
   insertMessage, loadMessages, getMessageById, recallMessage, searchMessages, stats, clearHistory, trimMessages, updateMessageStoredName,
+  listReferencedStoredNames, trimMessagesByAge,
   insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes,
-  createRoom, loadRooms, updateRoom, deleteRoom
+  createRoom, loadRooms, updateRoom, deleteRoom,
+  createEvent, listEvents, getEvent, deleteEvent, listUnfiredReminders, markEventReminded,
+  getTranslation, saveTranslation
 };

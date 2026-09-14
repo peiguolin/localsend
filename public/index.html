@@ -29,6 +29,7 @@
           <button class="tab" id="tabShare" type="button">共享文件</button>
           <button class="tab" id="tabBoard" type="button">白板</button>
           <button class="tab" id="tabScreen" type="button">屏幕共享</button>
+          <button class="tab" id="tabCalendar" type="button">日历</button>
           <button class="tab" id="tabData" type="button">数据</button>
         </nav>
         <span class="badge" id="connStatus">连接中…</span>
@@ -58,9 +59,11 @@
     <!-- 主区域：消息区 + 成员列表 -->
     <main class="main" id="chatMain">
       <div class="chat-wrap">
+        <div class="today-banner" id="todayBanner" hidden></div>
         <div class="room-titlebar">
           <span class="rt-name">公共房</span>
           <span class="rt-hint" id="roomTitleHint">所有人都在这里聊天</span>
+          <button class="rt-clear" id="roomClearBtn" type="button" hidden>清空记录</button>
         </div>
         <div class="chat-area" id="chatArea">
           <!-- 消息将动态渲染到这里 -->
@@ -216,8 +219,11 @@
           <div class="stat-card"><div class="stat-num" id="statFiles">-</div><div class="stat-label">文件/图片</div></div>
           <div class="stat-card"><div class="stat-num" id="statStrokes">-</div><div class="stat-label">白板笔迹</div></div>
           <div class="stat-card"><div class="stat-num" id="statDbSize">-</div><div class="stat-label">库文件大小</div></div>
+          <div class="stat-card"><div class="stat-num" id="statDiskFiles">-</div><div class="stat-label">磁盘文件数</div></div>
+          <div class="stat-card"><div class="stat-num" id="statDiskBytes">-</div><div class="stat-label">磁盘占用</div></div>
         </div>
         <div class="data-range" id="dataRange">最早记录：— · 最新记录：—</div>
+        <div class="data-range" id="dataRetention">保留策略：—</div>
 
         <div class="data-search">
           <input class="data-search-input" id="dataSearchKeyword" type="text" placeholder="搜索关键词（消息内容 / 文件名）…">
@@ -232,11 +238,77 @@
 
         <div class="data-actions">
           <button class="share-primary-btn" id="dataExportBtn" type="button">导出备份（下载 chat.db）</button>
+          <button class="tool-btn" id="dataSweepBtn" type="button">立即清理</button>
           <button class="tool-btn danger" id="dataClearBtn" type="button">清空历史</button>
         </div>
         <div class="upload-hint" id="dataHint"></div>
       </div>
     </main>
+
+    <!-- 日历面板 -->
+    <main class="main calendar-main" id="calendarView" hidden>
+      <div class="share-panel calendar-panel">
+        <div class="cal-toolbar">
+          <select class="cal-room-select" id="calRoomSelect" title="日程所属房间"></select>
+          <div class="cal-nav">
+            <button class="tool-btn icon-btn" id="calPrevYear" type="button" title="上一年">«</button>
+            <button class="tool-btn icon-btn" id="calPrevMonth" type="button" title="上一月">‹</button>
+            <span class="cal-title" id="calTitle">—</span>
+            <button class="tool-btn icon-btn" id="calNextMonth" type="button" title="下一月">›</button>
+            <button class="tool-btn icon-btn" id="calNextYear" type="button" title="下一年">»</button>
+          </div>
+          <div class="cal-actions">
+            <button class="tool-btn" id="calTodayBtn" type="button">今天</button>
+            <button class="tool-btn" id="calModeBtn" type="button" title="切换月/年视图">年视图</button>
+          </div>
+        </div>
+        <div class="cal-official-tip" id="calOfficialTip" hidden></div>
+        <div class="cal-month-grid" id="calGrid"></div>
+        <div class="cal-year-grid" id="calYearGrid" hidden></div>
+        <div class="cal-legend">
+          <span><i class="cal-badge-mini rest">休</i> 节假日</span>
+          <span><i class="cal-badge-mini work">班</i> 调休上班</span>
+          <span><i class="cal-dot-mini"></i> 有日程</span>
+          <span class="cal-legend-dim">日期下方小字为农历 / 节气 / 传统节日</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- 日期详情 + 日程弹窗 -->
+    <div class="modal" id="calDayModal" hidden>
+      <div class="modal-backdrop"></div>
+      <div class="modal-card cal-day-card">
+        <div class="cal-day-head">
+          <div>
+            <div class="cal-day-title" id="calDayTitle">—</div>
+            <div class="cal-day-sub" id="calDaySub">—</div>
+          </div>
+          <button class="quote-preview-x" id="calDayClose" type="button" title="关闭">×</button>
+        </div>
+        <div class="cal-day-holiday" id="calDayHoliday" hidden></div>
+        <div class="sidebar-title">当日日程</div>
+        <div class="cal-event-list" id="calEventList"></div>
+        <div class="sidebar-title">添加日程</div>
+        <div class="cal-add-form">
+          <input class="modal-input" id="calEvTitle" placeholder="标题（如：版本评审 / 值班：小明）" maxlength="60">
+          <div class="cal-add-row">
+            <input class="modal-input cal-time-input" id="calEvTime" type="time" title="时间（提醒需要）">
+            <select class="modal-input cal-remind-select" id="calEvRemind" title="到点向房间发送提醒（需填写时间）">
+              <option value="0">不提醒</option>
+              <option value="10">提前 10 分钟</option>
+              <option value="30">提前 30 分钟</option>
+              <option value="60">提前 1 小时</option>
+              <option value="1440">提前 1 天</option>
+            </select>
+          </div>
+          <div class="cal-add-row">
+            <input class="modal-input" id="calEvNote" placeholder="备注（可选）" maxlength="200">
+          </div>
+          <button class="share-primary-btn" id="calEvAddBtn" type="button">添加</button>
+        </div>
+        <div class="modal-tip error" id="calEvError" hidden></div>
+      </div>
+    </div>
 
     <!-- 移动端：房间标签栏（横滑切换，贴底部输入栏上方） -->
     <nav class="mobile-roombar" id="mobileRoomBar" hidden>
@@ -372,10 +444,12 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/lunar.js"></script>
   <script src="client.js"></script>
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>
   <script src="screen-share.js"></script>
   <script src="data-panel.js"></script>
+  <script src="calendar.js"></script>
 </body>
 </html>

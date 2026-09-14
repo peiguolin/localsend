@@ -21,6 +21,11 @@ function makeEl(tag) {
       _s: new Set(),
       add(...c) { c.forEach((x) => this._s.add(x)); },
       remove(...c) { c.forEach((x) => this._s.delete(x)); },
+      toggle(c, force) {
+        const want = force === undefined ? !this._s.has(c) : !!force;
+        if (want) this._s.add(c); else this._s.delete(c);
+        return want;
+      },
       contains(c) { return this._s.has(c); }
     },
     addEventListener(evt, fn) {
@@ -100,7 +105,11 @@ const windowStub = {
 const socketHandlers = {};
 const emitted = [];
 const socketStub = {
-  on(evt, cb) { socketHandlers[evt] = cb; },
+  on(evt, cb) {
+    // 真实 socket 同事件可挂多个监听；链式合并保持 socketHandlers[evt](...) 调用形式
+    const prev = socketHandlers[evt];
+    socketHandlers[evt] = prev ? (...args) => { prev(...args); cb(...args); } : cb;
+  },
   emit(evt, data) { emitted.push({ evt, data }); }
 };
 
@@ -134,6 +143,7 @@ global.window = windowStub;
 global.document = documentStub;
 global.io = () => socketStub;
 global.RTCPeerConnection = FakePC;
+global.CSS = { escape: (s) => String(s).replace(/["\\\]]/g, '\\$&') };
 Object.defineProperty(global, 'navigator', {
   configurable: true,
   value: { mediaDevices: { getUserMedia: () => Promise.resolve(mediaStream) } }
