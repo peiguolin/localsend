@@ -41,7 +41,8 @@
   st.selectedMembers = st.selectedMembers || new Set(); // 多选呼叫的成员 id
 
   // ---------- 未读提醒 ----------
-  st.unreadCount = 0;
+  st.unreadCount = 0;    // 页面未聚焦时的未读数（标签页标题 / favicon）
+  st.pillCount = 0;      // 滚动到上方看历史时的新消息数（页内"新消息 N 条"浮条，与焦点无关）
 
   // ---------- 消息提示音 ----------
   st.audioCtx = null;

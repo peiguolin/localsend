@@ -105,11 +105,11 @@
   }
 
   function appendMsg(node) {
+    // 先在追加前判断用户是否停在底部附近（追加后距离会变，长消息会超出阈值导致误判）
+    const wasNear = isNearBottom();
     chatArea.appendChild(node);
-    // 用户停留在底部时才自动滚到底；翻看历史时不动滚动条
-    if (isNearBottom()) {
-      chatArea.scrollTop = chatArea.scrollHeight;
-    }
+    // 用户停留在底部附近 → 滚到最新；翻看历史时不动滚动条
+    if (wasNear) chatArea.scrollTop = chatArea.scrollHeight;
   }
 
   // 页内提示条（各分片经 app.setHint 复用）
@@ -229,9 +229,9 @@
     } catch (_) { /* 忽略音频失败 */ }
   }
 
-  // 页内"新消息"浮条
+  // 页内"新消息"浮条（滚动到上方看历史时提示，与页面是否聚焦无关）
   function showUnreadPill() {
-    unreadPillText.textContent = `${state.unreadCount} 条新消息`;
+    unreadPillText.textContent = `${state.pillCount} 条新消息`;
     unreadPill.classList.add('show');
   }
 
@@ -239,22 +239,33 @@
     unreadPill.classList.remove('show');
   }
 
+  // 浮条清零：滚到底部 / 点浮条 / 自己发消息时调用
+  function resetPill() {
+    state.pillCount = 0;
+    hideUnreadPill();
+  }
+
+  // 页面未聚焦未读清零（标签页标题 / favicon），不影响页内浮条
   function resetUnread() {
     if (state.unreadCount === 0) return;
     state.unreadCount = 0;
     updateTabIndicator();
-    hideUnreadPill();
   }
 
-  // 收到消息后的未读判定：自己的消息 / 页面有焦点都不计数；@提及时播放专属提示音
+  // 收到消息后的提醒：@提及时播放专属提示音；滚到上方时累计浮条；未聚焦时累计标签页未读
   function handleIncomingMessage(data) {
     if (app.isOwnMessage(data)) return;
     const mentioned = (data.mentions || []).includes(state.myNickname);
     if (mentioned) playMentionPing();
+    // 页内浮条：滚动到上方看历史时来消息 → 提示"新消息 N 条"（无论页面是否聚焦）
+    if (!isNearBottom()) {
+      state.pillCount++;
+      showUnreadPill();
+    }
     if (document.hasFocus()) return;
+    // 页面未聚焦：标签页标题 / favicon / 桌面通知 / 提示音
     state.unreadCount++;
     updateTabIndicator();
-    if (!isNearBottom()) showUnreadPill();
     if (document.visibilityState === 'hidden') notifyDesktop(mentioned ? { ...data, mention: true } : data);
     if (!mentioned) playPing();
   }
@@ -342,13 +353,14 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') resetUnread();
   });
-  // 滚动回底部 → 隐藏浮条
+  // 滚动回底部 → 清浮条
   chatArea.addEventListener('scroll', () => {
-    if (isNearBottom()) hideUnreadPill();
+    if (isNearBottom()) resetPill();
   });
-  // 点击浮条 → 清未读并滚到底部
+  // 点击浮条 → 清未读/浮条并滚到底部
   unreadPill.addEventListener('click', () => {
     resetUnread();
+    resetPill();
     scrollToBottom(true);
   });
   // 桌面通知权限必须在用户手势中请求：首次点击/按键时尝试
@@ -451,6 +463,7 @@
     handleIncomingMessage,
     hideUnreadPill,
     resetUnread,
+    resetPill,
     closeDrawer,
     openDrawer
   });

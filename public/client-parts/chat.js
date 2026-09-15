@@ -236,6 +236,8 @@
     } else {
       renderTextMsg(data);
     }
+    // 自己发的消息始终滚到最新（自己输入后自动到底部）
+    if (app.isOwnMessage(data)) app.scrollToBottom(true);
     app.handleIncomingMessage(data);
   });
 
@@ -250,7 +252,7 @@
     app.closeAutocomplete();
     msgInput.focus();
     app.scrollToBottom(true);
-    app.hideUnreadPill();
+    app.resetPill();
   }
 
   sendBtn.addEventListener('click', sendMessage);
