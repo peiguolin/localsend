@@ -19,7 +19,16 @@ const CONFIG_DEFS = {
   msgTtlDays:    { def: 0,     type: 'int',   env: 'LOCALSEND_MSG_TTL_DAYS',     restart: true },
   remindTickMs:  { def: 30000, type: 'int',   env: 'LOCALSEND_REMIND_TICK_MS',   restart: true },
   translateUrl:  { def: '',    type: 'str',   env: 'LOCALSEND_TRANSLATE_URL',    restart: false },
-  translateGtx:  { def: false, type: 'bool',  env: 'LOCALSEND_TRANSLATE_GTX',    restart: true }
+  translateGtx:  { def: false, type: 'bool',  env: 'LOCALSEND_TRANSLATE_GTX',    restart: true },
+  // AI 机器人（OpenAI 兼容 /v1/chat/completions；@提及触发；均即时生效，rt-bot 在消息时读 currentConfig）
+  botEnabled:   { def: false, type: 'bool', env: 'LOCALSEND_BOT_ENABLED',   restart: false },
+  botName:      { def: '机器人', type: 'str', env: 'LOCALSEND_BOT_NAME',      restart: false },
+  botBaseUrl:   { def: '',    type: 'str', env: 'LOCALSEND_BOT_BASE_URL',   restart: false },
+  botApiKey:    { def: '',    type: 'str', env: 'LOCALSEND_BOT_API_KEY',    restart: false },
+  botModel:     { def: '',    type: 'str', env: 'LOCALSEND_BOT_MODEL',      restart: false },
+  botPrompt:    { def: '',    type: 'str', env: 'LOCALSEND_BOT_PROMPT',     restart: false },
+  botContextN:  { def: 10,    type: 'int', env: 'LOCALSEND_BOT_CONTEXT_N',  restart: false },
+  botTimeoutMs: { def: 60000, type: 'int', env: 'LOCALSEND_BOT_TIMEOUT_MS', restart: false }
 };
 
 // 读取配置文件（不存在或损坏则用默认）

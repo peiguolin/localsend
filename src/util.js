@@ -61,9 +61,11 @@ function randomNickname() {
   return `用户${Math.floor(1000 + Math.random() * 9000)}`;
 }
 
-// 广播在线成员列表
+// 广播在线成员列表（机器人启用时作为虚拟成员加入，供 @提及自动补全）
 function broadcastMembers(io) {
   const members = Array.from(state.onlineUsers.entries()).map(([id, nickname]) => ({ id, nickname }));
+  const bot = currentConfig();
+  if (bot.botEnabled && bot.botName) members.push({ id: 'bot', nickname: String(bot.botName), bot: true });
   io.emit('members_update', members);
 }
 

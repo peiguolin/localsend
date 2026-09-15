@@ -107,10 +107,11 @@
     const isSelf = isOwnMessage(data);
     const mentionedMe = !isSelf && (data.mentions || []).includes(state.myNickname);
     const div = document.createElement('div');
-    div.className = 'msg ' + (isSelf ? 'self' : 'other') + (mentionedMe ? ' mentioned' : '');
+    div.className = 'msg ' + (isSelf ? 'self' : 'other') + (mentionedMe ? ' mentioned' : '') + (data.isBot ? ' bot' : '');
     if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
+        ${data.isBot ? '<span class="msg-bot-badge">🤖</span>' : ''}
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
         <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>

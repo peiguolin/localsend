@@ -26,6 +26,7 @@ const rtScreenshare = require('./src/rt-screenshare');
 const rtCalendar = require('./src/rt-calendar');
 const rtTranslate = require('./src/rt-translate');
 const rtConfig = require('./src/rt-config');
+const rtBot = require('./src/rt-bot');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -87,6 +88,7 @@ io.on('connection', (socket) => {
 
   // 各实时域注册事件
   rtChat.register(io, socket);
+  rtBot.register(io, socket); // 需在 rtChat 之后：机器人触发依赖消息已入库/入流水
   rtRooms.register(io, socket);
   rtCall.register(io, socket);
   rtWhiteboard.register(io, socket);

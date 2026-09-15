@@ -9,7 +9,9 @@ function registerRoutes(app) {
     if (!isLocalAddr(req.ip || req.socket.remoteAddress)) {
       return res.status(403).json({ ok: false, error: '仅宿主机可查看配置' });
     }
-    res.json({ ok: true, config: currentConfig() });
+    const cfg = currentConfig();
+    cfg.botApiKey = ''; // 只写不回显：API Key 不在面板回读，留空即表示保持原值
+    res.json({ ok: true, config: cfg });
   });
 
   app.post('/api/config', require('express').json({ limit: '32kb' }), async (req, res) => {

@@ -3156,3 +3156,21 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
   .data-config-grid { grid-template-columns: 1fr; }
   .data-config-cards { grid-template-columns: 1fr; }
 }
+
+/* ===== AI 机器人 ===== */
+.msg.bot .msg-bubble {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-bottom-left-radius: 4px;
+}
+
+.msg-bot-badge {
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+.member-bot {
+  font-size: 12px;
+  margin-left: auto;
+  flex-shrink: 0;
+}

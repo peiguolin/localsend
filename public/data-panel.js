@@ -124,7 +124,10 @@
   const CONFIG_LABELS = {
     port: '服务端口', uploadDir: '上传目录', dbFile: '数据库文件', localAddrs: '宿主机地址白名单',
     fileTtlDays: '文件保留天数', maxUploadMB: 'uploads 容量上限(MB)', msgTtlDays: '消息保留天数',
-    remindTickMs: '日程提醒轮询(ms)', translateUrl: '翻译引擎地址(即时生效)', translateGtx: '允许谷歌免费端点回退'
+    remindTickMs: '日程提醒轮询(ms)', translateUrl: '翻译引擎地址(即时生效)', translateGtx: '允许谷歌免费端点回退',
+    botEnabled: '启用 AI 机器人', botName: '机器人昵称', botBaseUrl: '接口地址（OpenAI 兼容）',
+    botApiKey: 'API Key（只写，不回显）', botModel: '模型名', botPrompt: '系统提示词（可选）',
+    botContextN: '上下文条数', botTimeoutMs: '生成超时(ms)'
   };
 
   // 按模块分组的配置项
@@ -132,13 +135,14 @@
     { id: 'network',  title: '服务与网络', desc: '服务端口 · 宿主机地址白名单', fields: ['port', 'localAddrs'] },
     { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'msgTtlDays'] },
     { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
-    { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] }
+    { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
+    { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botPrompt', 'botContextN', 'botTimeoutMs'] }
   ];
 
   let currentCfg = null;      // 最近一次拉取/保存后的生效配置（含 *Restart 标记）
   let currentGroupId = null;  // 当前打开的表单所属模块
 
-  // 渲染单个模块的表单（只画该模块的字段）
+  // 渲染单个模块的表单（只画该模块的字段；按值类型自适应控件）
   function renderConfigCard(fields) {
     dataConfigGrid.innerHTML = '';
     for (const k of fields) {
@@ -148,18 +152,40 @@
       row.className = 'data-config-item';
       const needsRestart = currentCfg && currentCfg[k + 'Restart'];
       row.innerHTML = `<span class="data-config-label">${escapeHtml(label)}${needsRestart ? ' <em>重启</em>' : ''}</span>`;
-      const input = document.createElement('input');
-      input.className = 'modal-input';
-      input.dataset.key = k;
-      if (k === 'translateGtx') {
+      const v = currentCfg && currentCfg[k];
+      if (typeof v === 'boolean') {
+        // 开关类
+        const input = document.createElement('input');
         input.type = 'checkbox';
-        input.checked = !!(currentCfg && currentCfg[k]);
-        input.classList.add('data-config-check');
+        input.className = 'data-config-check';
+        input.dataset.key = k;
+        input.checked = !!v;
+        row.appendChild(input);
+      } else if (k === 'botPrompt') {
+        // 长文本（系统提示词）
+        const ta = document.createElement('textarea');
+        ta.className = 'modal-input data-config-prompt';
+        ta.dataset.key = k;
+        ta.rows = 3;
+        ta.placeholder = '（可选）定义机器人角色与回答风格';
+        ta.value = v === undefined ? '' : String(v);
+        row.appendChild(ta);
+      } else if (k === 'botApiKey') {
+        // 密码框：只写不回显，留空表示保持原值
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.className = 'modal-input';
+        input.dataset.key = k;
+        input.placeholder = '已保存，留空则不改';
+        row.appendChild(input);
       } else {
-        input.type = k === 'port' || k.endsWith('Days') || k.endsWith('MB') || k.endsWith('Ms') ? 'number' : 'text';
-        input.value = currentCfg && currentCfg[k] !== undefined ? String(currentCfg[k]) : '';
+        const input = document.createElement('input');
+        input.className = 'modal-input';
+        input.dataset.key = k;
+        input.type = typeof v === 'number' ? 'number' : 'text';
+        input.value = v === undefined ? '' : String(v);
+        row.appendChild(input);
       }
-      row.appendChild(input);
       dataConfigGrid.appendChild(row);
     }
   }
@@ -217,9 +243,10 @@
   dataConfigSaveBtn.addEventListener('click', async () => {
     const g = CONFIG_GROUPS.find((x) => x.id === currentGroupId);
     const updates = {};
-    dataConfigGrid.querySelectorAll('input').forEach((el) => {
+    dataConfigGrid.querySelectorAll('input, textarea').forEach((el) => {
       const k = el.dataset.key;
       if (el.type === 'checkbox') updates[k] = el.checked;
+      else if (k === 'botApiKey' && !el.value) { /* 留空 = 保持原 key 不回写 */ }
       else updates[k] = el.value;
     });
     dataConfigSaveBtn.disabled = true;

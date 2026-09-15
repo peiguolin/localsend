@@ -59,7 +59,14 @@
       nameSpan.style.whiteSpace = 'nowrap';
       li.appendChild(dot);
       li.appendChild(nameSpan);
-      if (name === state.myNickname && id === state.myId) {
+      if (m && m.bot) {
+        // 机器人虚拟成员：只标记，不可多选/呼叫
+        const badge = document.createElement('span');
+        badge.className = 'member-bot';
+        badge.textContent = '🤖';
+        badge.title = 'AI 机器人（@' + name + ' 触发）';
+        li.appendChild(badge);
+      } else if (name === state.myNickname && id === state.myId) {
         const me = document.createElement('span');
         me.className = 'member-me';
         me.textContent = '我';
