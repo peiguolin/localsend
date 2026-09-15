@@ -121,9 +121,10 @@ async function main() {
 
   console.log('【前端资产】');
   const pub = path.join(__dirname, '..', 'public');
-  const client = fs.readFileSync(path.join(pub, 'client.js'), 'utf8');
-  check('右键菜单含「翻译成中文」', client.includes('翻译成中文') && client.includes('translateMessage'));
-  check('前端有 CJK 跳过启发式', client.includes('mostlyCJK'));
+  const chat = fs.readFileSync(path.join(pub, 'client-parts', 'chat.js'), 'utf8');
+  const util = fs.readFileSync(path.join(pub, 'client-parts', 'util.js'), 'utf8');
+  check('chat 分片右键菜单含「翻译成中文」', chat.includes('翻译成中文') && chat.includes('translateMessage'));
+  check('前端有 CJK 跳过启发式', util.includes('mostlyCJK'));
   const css = fs.readFileSync(path.join(pub, 'style.css'), 'utf8');
   check('译文块样式存在', css.includes('.translate-block'));
 

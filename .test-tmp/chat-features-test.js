@@ -143,9 +143,15 @@ async function main() {
     check('highlight.js 已 vendor', fs.existsSync(vendor) && fs.statSync(vendor).size > 100000);
     const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
     check('页面加载 highlight.js 与引用预览条', html.includes('vendor/highlight.min.js') && html.includes('id="quotePreview"'));
-    const client = fs.readFileSync(path.join(pub, 'client.js'), 'utf8');
-    check('client.js 含撤回/代码复制/补全逻辑',
-      client.includes('chat_recall') && client.includes('code-copy') && client.includes('ac-box'));
+    // 撤回/代码复制在 chat 分片、@补全在 autocomplete 分片（client.js 为壳，负责装配各分片）
+    const chat = fs.readFileSync(path.join(pub, 'client-parts', 'chat.js'), 'utf8');
+    const ac = fs.readFileSync(path.join(pub, 'client-parts', 'autocomplete.js'), 'utf8');
+    const shell = fs.readFileSync(path.join(pub, 'client.js'), 'utf8');
+    check('chat 分片含撤回/代码复制逻辑',
+      chat.includes('chat_recall') && chat.includes('code-copy'));
+    check('autocomplete 分片含补全逻辑', ac.includes('ac-box'));
+    check('client.js 装配了各功能分片',
+      shell.includes("require('./client-parts/chat.js')") && shell.includes("require('./client-parts/autocomplete.js')"));
 
     a.disconnect(); b.disconnect();
   } finally {

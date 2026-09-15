@@ -242,6 +242,16 @@
           <button class="tool-btn danger" id="dataClearBtn" type="button">清空历史</button>
         </div>
         <div class="upload-hint" id="dataHint"></div>
+
+        <div class="data-config" id="dataConfigBox" hidden>
+          <span class="sidebar-title">服务器配置（仅宿主机）</span>
+          <div class="data-config-grid" id="dataConfigGrid"></div>
+          <div class="data-config-tip" id="dataConfigTip"></div>
+          <div class="data-actions">
+            <button class="tool-btn" id="dataConfigSaveBtn" type="button">保存配置</button>
+            <button class="tool-btn" id="dataConfigReloadBtn" type="button" hidden>重新加载</button>
+          </div>
+        </div>
       </div>
     </main>
 
@@ -462,7 +472,16 @@
   <script src="vendor/highlight.min.js"></script>
   <script src="vendor/lunar.js"></script>
   <script src="vendor/emoji-data.js"></script>
+  <script src="client-parts/util.js"></script>
+  <script src="client-parts/state.js"></script>
   <script src="client.js"></script>
+  <script src="client-parts/call.js"></script>
+  <script src="client-parts/chat.js"></script>
+  <script src="client-parts/rooms.js"></script>
+  <script src="client-parts/members.js"></script>
+  <script src="client-parts/emoji.js"></script>
+  <script src="client-parts/autocomplete.js"></script>
+  <script src="client-parts/upload.js"></script>
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>
   <script src="screen-share.js"></script>
