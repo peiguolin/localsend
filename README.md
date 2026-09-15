@@ -57,6 +57,24 @@ npm start          # 默认端口 3000，PORT=8080 npm start 可改
 > 浏览器会提示"连接不是私密连接"——点 **高级 → 继续访问** 即可。
 > 必须用 HTTPS 是因为浏览器的文件夹共享能力（File System Access API）只在安全上下文下开放。
 
+### 配置中心
+
+所有配置集中在 `localsend.config.json`（不存在则用默认值；`localsend.config.example.json` 是模板，本机文件已 gitignore）。**宿主机**在「数据」面板底部有配置卡，可视化查看/修改并保存回该文件：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `port` | 3000 | 服务端口（重启） |
+| `uploadDir` / `dbFile` | 空 | 覆盖默认 `uploads/` 与 `data/chat.db` 位置（重启） |
+| `localAddrs` | 空 | 宿主机地址白名单（默认回环 ∪ 本机网卡 IP；重启） |
+| `fileTtlDays` | 30 | 文件保留天数，0=不限（重启） |
+| `maxUploadMB` | 2048 | uploads 容量上限（重启） |
+| `msgTtlDays` | 0 | 消息保留天数，0=永久（重启） |
+| `remindTickMs` | 30000 | 日程提醒轮询间隔（重启） |
+| `translateUrl` | 空 | 翻译引擎地址，`off`=关闭；**保存即时生效**（自动探测本机 5000 端口） |
+| `translateGtx` | false | 允许谷歌免费端点回退（内容发第三方；重启） |
+
+**优先级**：环境变量 > `localsend.config.json` > 默认值。环境变量仍可随时覆盖（测试/临时用途），变量名即上表旧名（`PORT`、`LOCALSEND_*`）。
+
 ## 文件夹共享用法
 
 **共享者**（共享自己电脑的文件夹）：

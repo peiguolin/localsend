@@ -8,10 +8,11 @@
 const path = require('path');
 const fs = require('fs');
 const { DatabaseSync } = require('node:sqlite');
+const { currentConfig } = require('./src/config');
 
 const DATA_DIR = path.join(__dirname, 'data');
-// 库文件路径可用环境变量覆盖（测试用独立库，避免污染真实数据）
-const DB_FILE = process.env.LOCALSEND_DB_FILE || path.join(DATA_DIR, 'chat.db');
+// 库文件路径：localsend.config.json 的 dbFile 或环境变量可覆盖（测试用独立库，避免污染真实数据）
+const DB_FILE = currentConfig().dbFile || process.env.LOCALSEND_DB_FILE || path.join(DATA_DIR, 'chat.db');
 
 // 消息保留上限：超过后按最旧裁剪
 const MESSAGE_RETENTION = 10000;

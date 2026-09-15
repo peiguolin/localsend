@@ -25,6 +25,7 @@ const rtWhiteboard = require('./src/rt-whiteboard');
 const rtScreenshare = require('./src/rt-screenshare');
 const rtCalendar = require('./src/rt-calendar');
 const rtTranslate = require('./src/rt-translate');
+const rtConfig = require('./src/rt-config');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -33,11 +34,12 @@ const io = new Server(server);
 // ---------- 静态资源 ----------
 app.use(express.static(path.join(ROOT_DIR, 'public')));
 
-// ---------- HTTP 路由（文件 + 文件夹共享中转 + 日历数据 + 翻译） ----------
+// ---------- HTTP 路由（文件 + 文件夹共享中转 + 日历数据 + 翻译 + 配置中心） ----------
 routesFiles.registerRoutes(app, io);
 rtShare.registerRoutes(app, io);
 rtCalendar.registerRoutes(app);
 rtTranslate.registerRoutes(app);
+rtConfig.registerRoutes(app);
 
 // ---------- Socket.IO 连接编排 ----------
 io.on('connection', (socket) => {

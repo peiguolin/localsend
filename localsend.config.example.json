@@ -1,0 +1,12 @@
+{
+  "port": 3000,
+  "uploadDir": "",
+  "dbFile": "",
+  "localAddrs": "",
+  "fileTtlDays": 30,
+  "maxUploadMB": 2048,
+  "msgTtlDays": 0,
+  "remindTickMs": 30000,
+  "translateUrl": "http://127.0.0.1:5000",
+  "translateGtx": false
+}

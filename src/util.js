@@ -1,6 +1,7 @@
 /* 通用工具函数（无状态） */
 const os = require('os');
 const state = require('./state');
+const { currentConfig } = require('./config');
 
 // multer/busboy 默认按 latin1 解码文件名，需还原为 UTF-8（浏览器 FormData 发送 UTF-8 文件名）
 function decodeOriginalName(name) {
@@ -30,12 +31,13 @@ function hasControlChars(s) {
 }
 
 // 宿主机判定：回环地址，或来源地址恰为本机任意网卡 IP（从本机用局域网 IP 访问也算宿主机）
-// LOCALSEND_LOCAL_ADDRS 可显式指定（逗号分隔），主要用于测试与特殊部署
+// 本机回环兜底；localAddrs（配置文件/env）可显式指定，主要用于测试与特殊部署
+const _cfg = currentConfig();
 const ownAddrs = new Set(
-  (process.env.LOCALSEND_LOCAL_ADDRS || '127.0.0.1,::1,::ffff:127.0.0.1')
+  (_cfg.localAddrs || '127.0.0.1,::1,::ffff:127.0.0.1')
     .split(',').map((s) => s.trim()).filter(Boolean)
 );
-if (!process.env.LOCALSEND_LOCAL_ADDRS) {
+if (!_cfg.localAddrs) {
   try {
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {

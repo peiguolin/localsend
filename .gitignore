@@ -39,3 +39,4 @@ Thumbs.db
 
 # 本地备份文件
 .test-tmp/*.bak
+localsend.config.json

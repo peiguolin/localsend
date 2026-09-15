@@ -1,13 +1,89 @@
-/* 全局配置：路径、大小限制、业务常量（无依赖，被各模块引用） */
+/* 全局配置中心：localsend.config.json 文件（宿主机可改）+ 环境变量覆盖
+ * 优先级：环境变量（临时/测试覆盖） > localsend.config.json > 默认值
+ * 宿主机可在「数据」面板的配置卡里查看与修改（写入 localsend.config.json，部分需重启）
+ * 所有业务常量从这里导出，各模块不得直接读 process.env */
 const path = require('path');
 const fs = require('fs');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
+const CONFIG_FILE = process.env.LOCALSEND_CONFIG_FILE || path.join(ROOT_DIR, 'localsend.config.json');
 
-const PORT = process.env.PORT || 3000;
+// ---------- 配置项定义：默认值 + 类型 + 对应环境变量 + 是否需要重启生效 ----------
+const CONFIG_DEFS = {
+  port:          { def: 3000,  type: 'int',   env: 'PORT',                       restart: true },
+  uploadDir:     { def: '',    type: 'str',   env: 'LOCALSEND_UPLOAD_DIR',       restart: true },
+  dbFile:        { def: '',    type: 'str',   env: 'LOCALSEND_DB_FILE',          restart: true },
+  localAddrs:    { def: '',    type: 'str',   env: 'LOCALSEND_LOCAL_ADDRS',      restart: true },
+  fileTtlDays:   { def: 30,    type: 'int',   env: 'LOCALSEND_FILE_TTL_DAYS',    restart: true },
+  maxUploadMB:   { def: 2048,  type: 'float', env: 'LOCALSEND_MAX_UPLOAD_MB',    restart: true },
+  msgTtlDays:    { def: 0,     type: 'int',   env: 'LOCALSEND_MSG_TTL_DAYS',     restart: true },
+  remindTickMs:  { def: 30000, type: 'int',   env: 'LOCALSEND_REMIND_TICK_MS',   restart: true },
+  translateUrl:  { def: '',    type: 'str',   env: 'LOCALSEND_TRANSLATE_URL',    restart: false },
+  translateGtx:  { def: false, type: 'bool',  env: 'LOCALSEND_TRANSLATE_GTX',    restart: true }
+};
 
-// 上传根目录可用环境变量覆盖（测试用独立目录，避免污染真实 uploads/）
-const UPLOAD_DIR = process.env.LOCALSEND_UPLOAD_DIR || path.join(ROOT_DIR, 'uploads');
+// 读取配置文件（不存在或损坏则用默认）
+function loadFileConfig() {
+  try {
+    const j = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (j && typeof j === 'object') return j;
+  } catch (_) { /* 无文件或损坏 → 全默认 */ }
+  return {};
+}
+
+function coerce(def, type, v) {
+  if (v === undefined || v === null || v === '') return def;
+  if (type === 'int') { const n = Number(v); return Number.isInteger(n) ? n : def; }
+  if (type === 'float') { const n = Number(v); return Number.isFinite(n) ? n : def; }
+  if (type === 'bool') return v === true || v === '1' || v === 'true';
+  return String(v);
+}
+
+// 解析出最终生效的配置（文件 → env 覆盖）
+function resolveConfig() {
+  const fileCfg = loadFileConfig();
+  const out = {};
+  for (const [k, d] of Object.entries(CONFIG_DEFS)) {
+    let v = coerce(d.def, d.type, fileCfg[k]);
+    const envV = process.env[d.env];
+    if (envV !== undefined && envV !== '') v = coerce(d.def, d.type, envV);
+    out[k] = v;
+  }
+  return out;
+}
+
+const cfg = resolveConfig();
+
+// 把配置写回文件（保留未知键；返回当前生效值与需重启项）
+function writeConfigFile(updates) {
+  const cur = loadFileConfig();
+  for (const [k, v] of Object.entries(updates || {})) {
+    if (!(k in CONFIG_DEFS)) continue;
+    const d = CONFIG_DEFS[k];
+    cur[k] = coerce(d.def, d.type, v);
+  }
+  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cur, null, 2));
+  // 重算生效值（env 覆盖权保留在 resolveConfig 内）
+  Object.assign(cfg, resolveConfig());
+  return { config: currentConfig(), restartNeeded: Object.keys(updates || {}).filter((k) => CONFIG_DEFS[k] && CONFIG_DEFS[k].restart) };
+}
+
+// 面板展示用：最终生效值 + 是否需要重启
+function currentConfig() {
+  const out = {};
+  for (const [k, d] of Object.entries(CONFIG_DEFS)) {
+    out[k] = cfg[k];
+    out[`${k}Restart`] = d.restart;
+  }
+  return out;
+}
+
+// ---------- 派生常量（沿用原导出名，兼容各模块） ----------
+const PORT = cfg.port;
+
+// 上传根目录可用环境变量/配置文件覆盖（测试用独立目录，避免污染真实 uploads/）
+const UPLOAD_DIR = cfg.uploadDir || path.join(ROOT_DIR, 'uploads');
 const META_FILE = path.join(UPLOAD_DIR, '.meta.json');
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 
@@ -108,20 +184,24 @@ const SS_MAX_VIEWERS = 8;
 const CHAT_LOG_MAX = 500;
 const RECALL_WINDOW = 2 * 60 * 1000; // 撤回时限 2 分钟
 
-// ---------- 数据生命周期（保留策略，环境变量可调） ----------
-const FILE_TTL_DAYS = Number(process.env.LOCALSEND_FILE_TTL_DAYS || 30);      // 文件保留天数，0=不限制
-const MAX_UPLOAD_BYTES = Number(process.env.LOCALSEND_MAX_UPLOAD_MB || 2048) * 1024 * 1024; // uploads 容量上限（LRU 删最旧），0=不限制
-const MSG_TTL_DAYS = Number(process.env.LOCALSEND_MSG_TTL_DAYS || 0);         // 消息保留天数，0=永久
+// ---------- 数据生命周期（保留策略） ----------
+const FILE_TTL_DAYS = cfg.fileTtlDays;
+const MAX_UPLOAD_BYTES = cfg.maxUploadMB * 1024 * 1024; // uploads 容量上限（LRU 删最旧），0=不限制
+const MSG_TTL_DAYS = cfg.msgTtlDays;
 const TMP_STALE_MS = 24 * 60 * 60 * 1000;   // .tmp 未完成分片过期时间（24h）
 const SWEEP_INTERVAL = 60 * 60 * 1000;      // 定期清扫间隔（1h）
 const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;   // 孤儿文件至少存在 1h 才删（防误删上传中的文件）
 
 // 日程提醒
-const REMIND_TICK_MS = Number(process.env.LOCALSEND_REMIND_TICK_MS || 30000); // 提醒轮询间隔（默认 30s）
+const REMIND_TICK_MS = cfg.remindTickMs;
 const REMIND_LATE_MS = 30 * 60 * 1000;      // 触发时间已过去 30 分钟以上则静默标记（重启防爆）
 
+// 消息翻译
+const TRANSLATE_URL = cfg.translateUrl;
+const TRANSLATE_GTX = cfg.translateGtx;
+
 module.exports = {
-  ROOT_DIR, PORT,
+  ROOT_DIR, CONFIG_FILE, CONFIG_DEFS, PORT, currentConfig, writeConfigFile,
   UPLOAD_DIR, META_FILE, MAX_FILE_SIZE, CHUNK_SIZE, TMP_DIR,
   CERT_DIR, KEY_FILE, CERT_FILE, IMAGE_MIMES, FILE_CATEGORIES,
   fileCategory, dateDirName, ensureArchiveDir,
@@ -129,5 +209,6 @@ module.exports = {
   WB_MAX_STROKES, WB_MAX_POINTS_PER_STROKE, WB_MAX_TOTAL_POINTS, WB_COLOR_RE, CURSOR_PALETTE,
   SS_MAX_VIEWERS, CHAT_LOG_MAX, RECALL_WINDOW,
   FILE_TTL_DAYS, MAX_UPLOAD_BYTES, MSG_TTL_DAYS, TMP_STALE_MS, SWEEP_INTERVAL, ORPHAN_MIN_AGE_MS,
-  REMIND_TICK_MS, REMIND_LATE_MS
+  REMIND_TICK_MS, REMIND_LATE_MS,
+  TRANSLATE_URL, TRANSLATE_GTX
 };

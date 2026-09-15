@@ -109,6 +109,87 @@
     });
   }
 
+  // ---------- 服务器配置卡（仅宿主机） ----------
+  const dataConfigBox = document.getElementById('dataConfigBox');
+  const dataConfigGrid = document.getElementById('dataConfigGrid');
+  const dataConfigTip = document.getElementById('dataConfigTip');
+  const dataConfigSaveBtn = document.getElementById('dataConfigSaveBtn');
+  const dataConfigReloadBtn = document.getElementById('dataConfigReloadBtn');
+
+  const CONFIG_LABELS = {
+    port: '服务端口', uploadDir: '上传目录', dbFile: '数据库文件', localAddrs: '宿主机地址白名单',
+    fileTtlDays: '文件保留天数', maxUploadMB: 'uploads 容量上限(MB)', msgTtlDays: '消息保留天数',
+    remindTickMs: '日程提醒轮询(ms)', translateUrl: '翻译引擎地址(即时生效)', translateGtx: '允许谷歌免费端点回退'
+  };
+
+  function renderConfigCard(cfg) {
+    dataConfigGrid.innerHTML = '';
+    for (const [k, label] of Object.entries(CONFIG_LABELS)) {
+      const row = document.createElement('label');
+      row.className = 'data-config-item';
+      const needsRestart = cfg[k + 'Restart'];
+      row.innerHTML = `<span class="data-config-label">${escapeHtml(label)}${needsRestart ? ' <em>重启</em>' : ''}</span>`;
+      const input = document.createElement('input');
+      input.className = 'modal-input';
+      input.dataset.key = k;
+      if (k === 'translateGtx') {
+        input.type = 'checkbox';
+        input.checked = !!cfg[k];
+        input.classList.add('data-config-check');
+      } else {
+        input.type = k === 'port' || k.endsWith('Days') || k.endsWith('MB') || k.endsWith('Ms') ? 'number' : 'text';
+        input.value = cfg[k] === undefined ? '' : String(cfg[k]);
+      }
+      row.appendChild(input);
+      dataConfigGrid.appendChild(row);
+    }
+  }
+
+  function loadConfigCard() {
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then((j) => {
+        if (!j || !j.ok) return;
+        renderConfigCard(j.config);
+        dataConfigBox.hidden = false;
+      })
+      .catch(() => { dataConfigBox.hidden = true; });
+  }
+
+  dataConfigSaveBtn.addEventListener('click', async () => {
+    const updates = {};
+    dataConfigGrid.querySelectorAll('input').forEach((el) => {
+      const k = el.dataset.key;
+      if (el.type === 'checkbox') updates[k] = el.checked;
+      else updates[k] = el.value;
+    });
+    dataConfigSaveBtn.disabled = true;
+    try {
+      const r = await fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: updates })
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        dataConfigTip.textContent = (j.error) || '保存失败';
+        dataConfigTip.className = 'data-config-tip err';
+      } else {
+        const restart = j.restartNeeded && j.restartNeeded.length;
+        dataConfigTip.textContent = restart
+          ? `已保存，以下项需重启生效：${j.restartNeeded.join('、')}`
+          : '已保存';
+        dataConfigTip.className = 'data-config-tip';
+        dataConfigReloadBtn.hidden = !restart;
+        renderConfigCard(j.config);
+      }
+    } catch (_) {
+      dataConfigTip.textContent = '保存失败（网络错误）';
+      dataConfigTip.className = 'data-config-tip err';
+    } finally {
+      dataConfigSaveBtn.disabled = false;
+    }
+  });
+  dataConfigReloadBtn.addEventListener('click', () => window.location.reload());
+
   // ---------- 事件绑定 ----------
   window.chatApp.registerTab('data', tabData, [dataView]);
   tabData.addEventListener('click', refreshStats);
@@ -164,16 +245,17 @@
     });
   });
 
-  // 数据管理操作（导出/清空/清理）仅宿主机可见可用。
+  // 数据管理操作（导出/清空/清理/配置）仅宿主机可见可用。
   // isLocal 在 welcome 事件到达后才有值，因此门禁必须在 welcome 时应用（含重连），不能在加载时一刀切
   function applyAdminGate() {
     const isAdmin = !!window.chatApp.isLocal;
     exportBtn.hidden = !isAdmin;
     clearBtn.hidden = !isAdmin;
     sweepBtn.hidden = !isAdmin;
+    if (isAdmin) loadConfigCard();
     if (!isAdmin) {
-      setHint('数据导出、清理与清空仅宿主机可用', '');
-    } else if (hintEl.textContent === '数据导出、清理与清空仅宿主机可用') {
+      setHint('数据导出、清理、清空与配置仅宿主机可用', '');
+    } else if (hintEl.textContent === '数据导出、清理、清空与配置仅宿主机可用') {
       setHint('', '');
     }
   }

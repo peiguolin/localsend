@@ -8,18 +8,22 @@
  */
 const crypto = require('crypto');
 const store = require('../db.js');
+const { currentConfig } = require('./config');
 
-const ENV_URL = (process.env.LOCALSEND_TRANSLATE_URL || '').trim();
-const GTX_ENABLED = process.env.LOCALSEND_TRANSLATE_GTX === '1';
 const ENGINE_TIMEOUT = 10000;   // 引擎响应超时 10s
 const MAX_TEXT_LEN = 5000;
 const RATE_LIMIT_MS = 1000;     // 每 IP 最小请求间隔
 const AUTODETECT_URL = 'http://127.0.0.1:5000';
 
-let LT_URL = '';                // 解析后的 LibreTranslate 地址（detectEngine 后生效）
-if (ENV_URL && ENV_URL.toLowerCase() !== 'off') {
-  LT_URL = ENV_URL.replace(/\/+$/, '');
+// 解析自配置中心（localsend.config.json / env）：translateUrl 特殊值 'off' = 显式关闭
+function rawTranslateUrl() {
+  return String(currentConfig().translateUrl || '').trim();
 }
+
+let LT_URL = '';
+const init = rawTranslateUrl();
+if (init && init.toLowerCase() !== 'off') LT_URL = init.replace(/\/+$/, '');
+let GTX_ENABLED = !!currentConfig().translateGtx;
 
 const lastRequestAt = new Map(); // ip -> ts（简单限速）
 
@@ -41,14 +45,18 @@ function engineInfo() {
   return { available: false, engine: null };
 }
 
-// 启动时引擎探测：未显式配置时尝试本机默认地址（短超时，绝不阻塞启动）
+// 启动时引擎探测：未显式配置时尝试本机默认地址（短超时，绝不阻塞启动）；面板改配置后可再次调用
 async function detectEngine() {
-  if (LT_URL) {
-    console.log(`  消息翻译:   libretranslate (${LT_URL})`);
+  LT_URL = '';
+  GTX_ENABLED = !!currentConfig().translateGtx;
+  const url = rawTranslateUrl();
+  if (url && url.toLowerCase() === 'off') {
+    console.log('  消息翻译:   已显式关闭（translateUrl = off）');
     return;
   }
-  if (ENV_URL.toLowerCase() === 'off') {
-    console.log('  消息翻译:   已显式关闭（LOCALSEND_TRANSLATE_URL=off）');
+  if (url) {
+    LT_URL = url.replace(/\/+$/, '');
+    console.log(`  消息翻译:   libretranslate (${LT_URL})`);
     return;
   }
   const controller = new AbortController();
@@ -66,8 +74,14 @@ async function detectEngine() {
   if (GTX_ENABLED) {
     console.log('  消息翻译:   回退到谷歌免费端点（内容将发送到第三方）');
   } else {
-    console.log('  消息翻译:   未发现引擎（LOCALSEND_TRANSLATE_URL 可指定；本机 5000 端口有 LibreTranslate 会自动接入）');
+    console.log('  消息翻译:   未发现引擎（配置 translateUrl 可指定；本机 5000 端口有 LibreTranslate 会自动接入）');
   }
+}
+
+// 配置面板保存后实时重载翻译引擎
+async function reload() {
+  await detectEngine();
+  return engineInfo();
 }
 
 // 目标语言代码映射：LibreTranslate 的中文代码是 zh-Hans
@@ -171,4 +185,4 @@ function registerRoutes(app) {
   });
 }
 
-module.exports = { registerRoutes, engineInfo, mostlyCJK, detectEngine };
+module.exports = { registerRoutes, engineInfo, mostlyCJK, detectEngine, reload };

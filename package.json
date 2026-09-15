@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "restore": "node scripts/restore-db.js",
-    "test": "node .test-tmp/sio-share-test.js && node .test-tmp/nickname-test.js && node .test-tmp/webrtc-signal-test.js && node .test-tmp/whiteboard-test.js && node .test-tmp/theme-test.js && node .test-tmp/screen-share-test.js && node .test-tmp/chat-features-test.js && node .test-tmp/persist-test.js && node .test-tmp/data-panel-smoke.js && node .test-tmp/resume-upload-test.js && node .test-tmp/group-chat-test.js && node .test-tmp/group-ui-smoke.js && node .test-tmp/mobile-ui-smoke.js && node .test-tmp/paste-smoke.js && node .test-tmp/call-ui-smoke.js && node .test-tmp/room-clear-test.js && node .test-tmp/lifecycle-test.js && node .test-tmp/calendar-test.js && node .test-tmp/calendar-remind-test.js && node .test-tmp/translate-test.js"
+    "test": "node .test-tmp/sio-share-test.js && node .test-tmp/nickname-test.js && node .test-tmp/webrtc-signal-test.js && node .test-tmp/whiteboard-test.js && node .test-tmp/theme-test.js && node .test-tmp/screen-share-test.js && node .test-tmp/chat-features-test.js && node .test-tmp/persist-test.js && node .test-tmp/data-panel-smoke.js && node .test-tmp/resume-upload-test.js && node .test-tmp/group-chat-test.js && node .test-tmp/group-ui-smoke.js && node .test-tmp/mobile-ui-smoke.js && node .test-tmp/paste-smoke.js && node .test-tmp/call-ui-smoke.js && node .test-tmp/room-clear-test.js && node .test-tmp/lifecycle-test.js && node .test-tmp/calendar-test.js && node .test-tmp/calendar-remind-test.js && node .test-tmp/translate-test.js && node .test-tmp/config-test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
