@@ -21,6 +21,14 @@
   const groupTip = document.getElementById('groupTip');
   const roomCreateBtn = document.getElementById('roomCreateBtn');
   const groupPickList = document.getElementById('groupPickList');
+  // 机器人设置（宿主机或房主）
+  const roomBotBtn = document.getElementById('roomBotBtn');
+  const botModal = document.getElementById('botModal');
+  const botEnableSel = document.getElementById('botEnableSel');
+  const botPromptInput = document.getElementById('botPromptInput');
+  const botCfgTip = document.getElementById('botCfgTip');
+  const botCfgCancel = document.getElementById('botCfgCancel');
+  const botCfgSave = document.getElementById('botCfgSave');
 
   // ==================== 群聊房间 ====================
 
@@ -125,6 +133,7 @@
     state.roomUnread.set(room, 0);
     chatArea.innerHTML = '';
     state.msgStore.clear();
+    app.initHistoryState(); // 重置历史分页状态，防串房
     // 更新房间列表 active
     document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
     if (mobileRoomList) {
@@ -152,27 +161,65 @@
         sepEnd.innerHTML = `<div class="msg-bubble">—— 历史消息结束 ——</div>`;
         app.appendMsg(sepEnd);
         app.scrollToBottom(false);
+        app.initHistoryState(res.history); // 初始化该房间的历史分页起点
       }
     });
   }
 
-  // 顶部标题栏：显示当前房间名（切换房间时刷新）；房主/宿主机显示「清空记录」
+  // 顶部标题栏：显示当前房间名（切换房间时刷新）；房主/宿主机显示「清空记录」；宿主机/房主显示「🤖 机器人」
   function updateRoomTitlebar() {
     let title = '公共房';
     let hint = '所有人都在这里聊天';
     let canClear = false;
+    let canBot = !!app.isLocal; // 宿主机：任意房间可设机器人
     if (state.currentRoom !== 'main') {
       const r = state.myRooms.find((x) => x.id === state.currentRoom);
       title = roomDisplayName(r);
       hint = r ? (r.members || []).map((m) => m.nickname).join('、') : '';
       canClear = state.isLocalHost || !!(r && r.ownerClientId && r.ownerClientId === state.myClientId);
+      if (!canBot) canBot = !!(r && r.ownerClientId && r.ownerClientId === state.myClientId); // 房主也可设
     }
     const bar = document.querySelector('.room-titlebar .rt-name');
     if (bar) bar.textContent = title;
     const hintEl = document.getElementById('roomTitleHint');
     if (hintEl) hintEl.textContent = hint;
     roomClearBtn.hidden = !canClear;
+    roomBotBtn.hidden = !canBot;
   }
+
+  // ---------- 房间级机器人覆盖（宿主机或房主） ----------
+  function openBotConfigModal() {
+    botCfgTip.textContent = '';
+    socket.emit('room_bot_config', { room: state.currentRoom, get: true }, (res) => {
+      const enabled = res && res.ok ? res.enabled : null;
+      const prompt = res && res.ok ? (res.prompt || '') : '';
+      botEnableSel.value = enabled === null || enabled === undefined ? '' : (enabled ? '1' : '0');
+      botPromptInput.value = prompt;
+      botModal.hidden = false;
+    });
+  }
+
+  roomBotBtn.addEventListener('click', openBotConfigModal);
+  botCfgCancel.addEventListener('click', () => { botModal.hidden = true; });
+  botModal.addEventListener('click', (e) => {
+    if (e.target === botModal || e.target.classList.contains('modal-backdrop')) botModal.hidden = true;
+  });
+  botCfgSave.addEventListener('click', () => {
+    const v = botEnableSel.value;
+    const enabled = v === '' ? null : v === '1';
+    const prompt = botPromptInput.value.trim();
+    socket.emit('room_bot_config', { room: state.currentRoom, enabled, prompt }, (res) => {
+      if (res && res.ok) {
+        botModal.hidden = true;
+        app.setHint(
+          enabled === null ? '本房间机器人已恢复继承全局设置' : (enabled ? '本房间机器人已开启' : '本房间机器人已关闭'),
+          'success'
+        );
+      } else {
+        botCfgTip.textContent = (res && res.error) || '保存失败';
+      }
+    });
+  });
 
   // 清空本房间聊天记录（房主或宿主机；二次确认）
   roomClearBtn.addEventListener('click', () => {

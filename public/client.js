@@ -112,6 +112,11 @@
     if (wasNear) chatArea.scrollTop = chatArea.scrollHeight;
   }
 
+  // 历史分页：把更早的消息插到最顶部（不触发滚动）
+  function prependMsg(node) {
+    chatArea.insertBefore(node, chatArea.firstChild);
+  }
+
   // 页内提示条（各分片经 app.setHint 复用）
   function setHint(text, cls) {
     uploadHint.textContent = text;
@@ -324,6 +329,8 @@
     // 恢复我加入的群聊房（房间持久化：重启后仍在）
     state.myRooms = Array.isArray(data.rooms) ? data.rooms : [];
     app.renderRoomList();
+    // 初始化历史分页状态（welcome 已带最近历史）
+    app.initHistoryState(Array.isArray(data.history) ? data.history : []);
   });
 
   socket.on('system_message', (data) => {
@@ -457,6 +464,7 @@
   Object.assign(chatApp, {
     setHint,
     appendMsg,
+    prependMsg,
     isNearBottom,
     scrollToBottom,
     drawFavicon,

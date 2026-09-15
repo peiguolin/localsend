@@ -92,6 +92,19 @@ function init() {
       members_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_admin (
+      client_id TEXT PRIMARY KEY,
+      banned INTEGER NOT NULL DEFAULT 0,
+      ban_nickname TEXT NOT NULL DEFAULT '',
+      ban_at INTEGER NOT NULL DEFAULT 0,
+      mute_until INTEGER NOT NULL DEFAULT 0,
+      bot_ban INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS room_bot (
+      room_id TEXT PRIMARY KEY,
+      enabled INTEGER,
+      prompt TEXT
+    );
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -169,6 +182,7 @@ function loadMessages(limit, room) {
   `).all(room || 'main', limit || HISTORY_LIMIT);
   return rows.map((r) => ({
     id: r.mid || String(r.id),
+    numericId: r.id, // AUTOINCREMENT 稳定排序键（历史分页用）
     room: r.room,
     type: r.type,
     nickname: r.nickname,
@@ -240,6 +254,7 @@ function searchMessages(opts) {
   `).all(...args, Number(limit) || 100);
   return rows.map((r) => ({
     id: r.mid || String(r.id),
+    numericId: r.id, // AUTOINCREMENT 稳定排序键（历史分页用）
     room: r.room,
     type: r.type,
     nickname: r.nickname,
@@ -476,6 +491,81 @@ function deleteRoom(id) {
   d.prepare('DELETE FROM rooms WHERE id = ?').run(id);
 }
 
+// ---------- 用户管理状态（剔除/禁言/禁机器人，跨重启持久） ----------
+function loadUserAdmin() {
+  const d = getDb();
+  return d.prepare(`
+    SELECT client_id AS cid, banned, ban_nickname AS banNick, ban_at AS banAt,
+           mute_until AS muteUntil, bot_ban AS botBan
+    FROM user_admin
+  `).all();
+}
+
+function setUserAdmin(clientId, patch) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO user_admin (client_id, banned, ban_nickname, ban_at, mute_until, bot_ban)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(client_id) DO UPDATE SET
+      banned=excluded.banned, ban_nickname=excluded.ban_nickname, ban_at=excluded.ban_at,
+      mute_until=excluded.mute_until, bot_ban=excluded.bot_ban
+  `).run(
+    String(clientId),
+    patch.banned ? 1 : 0,
+    patch.banNickname || '',
+    patch.banAt || 0,
+    patch.muteUntil || 0,
+    patch.botBan ? 1 : 0
+  );
+}
+
+// ---------- 历史分页：取某条（numericId）之前的更早消息（升序返回） ----------
+function getMessagesBefore(room, beforeId, limit) {
+  const d = getDb();
+  const rows = d.prepare(`
+    SELECT id, msg_id AS mid, room, type, nickname, sender_id AS senderId, client_id AS clientId, text, file_name AS fileName,
+           file_size AS fileSize, stored_name AS storedName, quote_json AS quoteJson, recalled, timestamp
+    FROM messages
+    WHERE room = ? AND id < ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(room || 'main', Number(beforeId) || 0, limit || 50);
+  return rows.reverse().map((r) => ({
+    id: r.mid || String(r.id),
+    numericId: r.id, // AUTOINCREMENT 稳定排序键（历史分页用）
+    room: r.room,
+    type: r.type,
+    nickname: r.nickname,
+    senderId: r.senderId,
+    clientId: r.clientId || '',
+    text: r.text,
+    fileName: r.fileName,
+    fileSize: r.fileSize,
+    storedName: r.storedName || null,
+    quote: r.quoteJson ? JSON.parse(r.quoteJson) : null,
+    recalled: !!r.recalled,
+    timestamp: r.timestamp
+  }));
+}
+
+// ---------- 房间级机器人覆盖（enabled: null=继承全局 / 0=关 / 1=开；prompt: null=继承） ----------
+function loadRoomBot() {
+  const d = getDb();
+  return d.prepare('SELECT room_id AS room, enabled, prompt FROM room_bot').all();
+}
+
+function setRoomBot(room, enabled, prompt) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO room_bot (room_id, enabled, prompt) VALUES (?, ?, ?)
+    ON CONFLICT(room_id) DO UPDATE SET enabled=excluded.enabled, prompt=excluded.prompt
+  `).run(
+    String(room),
+    enabled === null || enabled === undefined ? null : (enabled ? 1 : 0),
+    prompt === undefined ? null : prompt
+  );
+}
+
 module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
@@ -484,5 +574,6 @@ module.exports = {
   insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes,
   createRoom, loadRooms, updateRoom, deleteRoom,
   createEvent, listEvents, getEvent, deleteEvent, listUnfiredReminders, markEventReminded,
-  getTranslation, saveTranslation
+  getTranslation, saveTranslation,
+  loadUserAdmin, setUserAdmin, getMessagesBefore, loadRoomBot, setRoomBot
 };

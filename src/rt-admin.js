@@ -1,8 +1,36 @@
 /* 用户管理（仅宿主机）：在线用户列表 + 剔除（封禁，禁重连）/ 限时禁言 / 禁机器人。
  * 状态在 src/state.js（mutes/botBans/bans，内存态，重启不持久）；
  * 强制点：连接（server.js ban 校验）、聊天（rt-chat 禁言校验）、机器人（rt-bot botBans 校验）。 */
+const store = require('../db.js');
 const state = require('./state');
 const { isLocalSocket } = require('./util');
+
+// 启动时从 DB 恢复剔除/禁言/禁机器人（跨重启持久）
+function loadUserAdminFromDb() {
+  let rows;
+  try { rows = store.loadUserAdmin(); } catch (_) { return; }
+  for (const r of rows || []) {
+    if (r.banned) state.bans.set(r.cid, { nickname: r.banNick || '', at: r.banAt || 0 });
+    if (r.muteUntil && r.muteUntil > Date.now()) state.mutes.set(r.cid, r.muteUntil);
+    if (r.botBan) state.botBans.add(r.cid);
+  }
+}
+
+// 把某 clientId 当前的管理状态写回 DB（DB 不可用不阻塞管理操作）
+function persistUserAdmin(clientId) {
+  try {
+    const cid = String(clientId || '');
+    if (!cid) return;
+    const ban = state.bans.get(cid);
+    store.setUserAdmin(cid, {
+      banned: state.bans.has(cid),
+      banNickname: (ban && ban.nickname) || '',
+      banAt: (ban && ban.at) || 0,
+      muteUntil: state.mutes.get(cid) || 0,
+      botBan: state.botBans.has(cid)
+    });
+  } catch (_) { /* ignore */ }
+}
 
 function register(io, socket) {
   const guard = () => isLocalSocket(socket);
@@ -50,6 +78,7 @@ function register(io, socket) {
       }
     }
     state.bans.set(cid, { nickname, at: Date.now() });
+    persistUserAdmin(cid);
     cb && cb({ ok: true, kicked });
   });
 
@@ -58,6 +87,7 @@ function register(io, socket) {
     if (!guard()) return deny(cb);
     const cid = String((data && data.clientId) || '');
     state.bans.delete(cid);
+    persistUserAdmin(cid);
     cb && cb({ ok: true });
   });
 
@@ -75,6 +105,7 @@ function register(io, socket) {
       state.mutes.delete(cid);
       cb && cb({ ok: true, mutedUntil: 0 });
     }
+    persistUserAdmin(cid);
   });
 
   // 禁/解禁 @机器人 权限
@@ -84,8 +115,9 @@ function register(io, socket) {
     if (!cid) return cb && cb({ ok: false, error: '缺少 clientId' });
     if (data && data.banned) state.botBans.add(cid);
     else state.botBans.delete(cid);
+    persistUserAdmin(cid);
     cb && cb({ ok: true });
   });
 }
 
-module.exports = { register };
+module.exports = { register, loadUserAdminFromDb };

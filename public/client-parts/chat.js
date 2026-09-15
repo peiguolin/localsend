@@ -16,6 +16,68 @@
   const sendBtn = document.getElementById('sendBtn');
   const quotePreview = document.getElementById('quotePreview');
 
+  // ---------- 历史分页（往上滚懒加载） ----------
+  let historyPrepend = false; // 为 true 时 renderXMsg 改为前插（加载更早消息用）
+  function insertMsgNode(div) {
+    if (historyPrepend) app.prependMsg(div);
+    else app.appendMsg(div);
+  }
+
+  // 初始化/重置分页状态：传 history=初始历史（升序）；不传则重置（切房时先清，防串房）
+  function initHistoryState(history) {
+    if (!history) {
+      state.oldestId = 0;
+      state.historyDone = true;
+      state.historyLoading = false;
+      return;
+    }
+    const first = history.find((m) => m && m.numericId);
+    state.oldestId = first ? first.numericId : 0;
+    state.historyDone = history.length < 200; // 初始不足一页 → 无更早
+    state.historyLoading = false;
+  }
+
+  let loadMoreEl = null;
+  function loadOlderHistory() {
+    if (state.historyLoading || state.historyDone || !state.oldestId) return;
+    state.historyLoading = true;
+    loadMoreEl = document.createElement('div');
+    loadMoreEl.className = 'msg system';
+    loadMoreEl.innerHTML = '<div class="msg-bubble">加载更早的消息…</div>';
+    chatArea.insertBefore(loadMoreEl, chatArea.firstChild);
+    socket.emit('history_page', { room: state.currentRoom, beforeId: state.oldestId, limit: 50 }, (res) => {
+      if (loadMoreEl) { loadMoreEl.remove(); loadMoreEl = null; }
+      if (res && res.ok && Array.isArray(res.history) && res.history.length) {
+        res.history.forEach((m) => { if (m && m.id) state.msgStore.set(m.id, m); });
+        const prevHeight = chatArea.scrollHeight;
+        historyPrepend = true;
+        // 逆序前插，保持时间升序（每次插到最前，最旧自然落在顶部）
+        for (let i = res.history.length - 1; i >= 0; i--) {
+          const m = res.history[i];
+          if (!m || m.recalled) continue;
+          if (m.type === 'image') renderImageMsg(m);
+          else if (m.type === 'file') renderFileMsg(m);
+          else renderTextMsg(m);
+        }
+        historyPrepend = false;
+        const newest = res.history[0];
+        state.oldestId = newest && newest.numericId ? newest.numericId : state.oldestId;
+        state.historyDone = res.history.length < 50;
+        // 补偿新增高度，保持视口位置不动
+        chatArea.scrollTop += chatArea.scrollHeight - prevHeight;
+      } else {
+        state.historyDone = true; // 没有更早消息了
+      }
+      state.historyLoading = false;
+    });
+  }
+
+  // 贴近顶部时触发加载更早（滚动事件由壳的未读浮条监听共存）
+  chatArea.addEventListener('scroll', () => {
+    if (chatArea.scrollTop > 80) return;
+    loadOlderHistory();
+  });
+
   // ---------- 消息渲染 ----------
   function renderSystemMsg(data) {
     const div = document.createElement('div');
@@ -23,7 +85,7 @@
     div.innerHTML = `
       <div class="msg-bubble">${escapeHtml(data.text || '')}</div>
     `;
-    app.appendMsg(div);
+    insertMsgNode(div);
   }
 
   // ---------- 消息内容渲染：```代码块 / `行内代码` / @提及（全程先转义再拼接，防 XSS） ----------
@@ -121,7 +183,7 @@
     applyCodeHighlight(div);
     const q = div.querySelector('.msg-quote');
     if (q) q.addEventListener('click', () => scrollToMessage(q.dataset.qid));
-    app.appendMsg(div);
+    insertMsgNode(div);
   }
 
   function renderFileMsg(data) {
@@ -150,7 +212,7 @@
         </div>
       </div>
     `;
-    app.appendMsg(div);
+    insertMsgNode(div);
   }
 
   function renderImageMsg(data) {
@@ -176,7 +238,7 @@
         <a class="download-btn" href="${escapeHtml(data.downloadUrl)}" download>下载原图</a>
       `;
     });
-    app.appendMsg(div);
+    insertMsgNode(div);
   }
 
   // ---------- 图片灯箱（点击放大预览） ----------
@@ -465,13 +527,14 @@
     }
   });
 
-  // 暴露给其他分片（rooms 切房历史、壳 welcome 编排 / 未读归属判定等）
+  // 暴露给其他分片（rooms 切房历史、壳 welcome 编排 / 未读归属判定 / 历史分页初始化等）
   Object.assign(app, {
     renderSystemMsg,
     renderTextMsg,
     renderFileMsg,
     renderImageMsg,
     clearQuote,
-    isOwnMessage
+    isOwnMessage,
+    initHistoryState
   });
 })();

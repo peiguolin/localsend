@@ -7,9 +7,22 @@
 const store = require('../db.js');
 const state = require('./state');
 const { currentConfig } = require('./config');
+const { isLocalSocket } = require('./util');
 const { chatLog, nextMsgId, chatLogPush } = require('./chatlog');
 
 const BOT_SENDER_ID = 'bot';
+
+// 启动时从 DB 恢复房间级机器人覆盖（跨重启持久）
+function loadRoomBotFromDb() {
+  let rows;
+  try { rows = store.loadRoomBot(); } catch (_) { return; }
+  for (const r of rows || []) {
+    state.roomBotConfig.set(r.room, {
+      enabled: r.enabled === null || r.enabled === undefined ? null : !!r.enabled,
+      prompt: r.prompt === undefined ? null : r.prompt
+    });
+  }
+}
 
 // 同房间同一时刻只允许一个生成任务（防连点刷爆 API）
 const generating = new Set();
@@ -72,21 +85,25 @@ function register(io, socket) {
   // 挂在 chat_message 上（rt-chat 先注册，先入库/广播，这里再触发）
   socket.on('chat_message', (data) => {
     const cfg = currentConfig();
-    if (!cfg.botEnabled) return;
+    const room = String((data && data.room) || 'main');
+    // 房间级覆盖：enabled=null 继承全局；true/false 覆盖本房间开关；prompt 覆盖本房间提示词
+    const ov = state.roomBotConfig.get(room) || {};
+    const enabled = (ov.enabled === null || ov.enabled === undefined) ? cfg.botEnabled : !!ov.enabled;
+    if (!enabled) return;
     const text = String((data && data.text) || '').trim();
     if (!text || !mentionsBot(text, cfg.botName)) return; // 目前仅 @提及触发
     // 该用户被禁止 @机器人 → 静默不触发
     if (state.botBans.has(String(socket.data.clientId || ''))) return;
-    const room = String((data && data.room) || 'main');
     if (generating.has(room)) return; // 该房间生成中，忽略重复触发
     generating.add(room);
     const botName = String(cfg.botName || '机器人');
+    const prompt = ov.prompt || cfg.botPrompt; // 本房间自定义提示词优先
 
     (async () => {
       try {
         io.to(room).emit('system_message', { room, text: `🤖 ${botName} 正在思考…` });
         const context = buildContext(room, socket.id, text, cfg.botContextN);
-        const reply = await callLLM(cfg, cfg.botPrompt, context, text);
+        const reply = await callLLM(cfg, prompt, context, text);
         const msg = {
           id: nextMsgId(),
           type: 'text',
@@ -110,6 +127,25 @@ function register(io, socket) {
       }
     })();
   });
+
+  // 查询/设置某房间的机器人覆盖（宿主机或该房间房主）：enabled 三态（null=继承/true/false）、prompt（留空=继承）
+  socket.on('room_bot_config', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    const room = String((data && data.room) || 'main');
+    const gr = room !== 'main' ? state.groupRooms.get(room) : null;
+    const isOwner = !!(gr && gr.ownerClientId === socket.data.clientId);
+    if (!isLocalSocket(socket) && !isOwner) return cb({ ok: false, error: '仅宿主机或房主可设置' });
+    const cur = state.roomBotConfig.get(room) || { enabled: null, prompt: null };
+    // 仅查询（客户端打开设置面板时预填）
+    if (data && data.get && !('enabled' in data) && !('prompt' in data)) {
+      return cb({ ok: true, enabled: cur.enabled, prompt: cur.prompt });
+    }
+    if (data && 'enabled' in data) cur.enabled = data.enabled === null || data.enabled === undefined ? null : !!data.enabled;
+    if (data && 'prompt' in data) cur.prompt = data.prompt ? String(data.prompt) : null;
+    state.roomBotConfig.set(room, cur);
+    try { store.setRoomBot(room, cur.enabled, cur.prompt); } catch (_) { /* DB 不可用不阻塞 */ }
+    cb({ ok: true, enabled: cur.enabled, prompt: cur.prompt });
+  });
 }
 
-module.exports = { register };
+module.exports = { register, loadRoomBotFromDb };

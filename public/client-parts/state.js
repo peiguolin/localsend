@@ -44,6 +44,11 @@
   st.unreadCount = 0;    // 页面未聚焦时的未读数（标签页标题 / favicon）
   st.pillCount = 0;      // 滚动到上方看历史时的新消息数（页内"新消息 N 条"浮条，与焦点无关）
 
+  // ---------- 历史分页（往上滚懒加载） ----------
+  st.oldestId = 0;       // 当前房间已加载最旧消息的 numericId（0=无更早）
+  st.historyLoading = false;
+  st.historyDone = false;
+
   // ---------- 消息提示音 ----------
   st.audioCtx = null;
 

@@ -6,7 +6,7 @@ const { hasControlChars, isLocalSocket, broadcastMembers } = require('./util');
 const { decorateHistory, deleteStoredFile } = require('./filemeta');
 const lifecycle = require('./lifecycle');
 const { myShareOf, broadcastShares } = require('./rt-share');
-const { RECALL_WINDOW } = require('./config');
+const { RECALL_WINDOW, currentConfig } = require('./config');
 
 const { onlineUsers, groupRooms, wbStrokes } = state;
 
@@ -27,6 +27,34 @@ function register(ioRef, socket) {
       return;
     } else if (muteUntil) {
       state.mutes.delete(socket.data.clientId); // 过期清理
+    }
+    // 发言限流：窗口内超量拒绝；连续超量自动短禁言（0=不限）
+    const cid = String(socket.data.clientId || '');
+    if (cid) {
+      const rlCfg = currentConfig();
+      const rlLimit = rlCfg.msgRateLimit || 0;
+      const rlWin = (rlCfg.msgRateWindowSec || 10) * 1000;
+      if (rlLimit > 0) {
+        const now = Date.now();
+        const rec = state.rateHits.get(cid) || { times: [], strikes: 0, lastStrikeAt: 0 };
+        rec.times = rec.times.filter((t) => now - t < rlWin);
+        if (rec.times.length >= rlLimit) {
+          rec.strikes++;
+          rec.lastStrikeAt = now;
+          if (rec.strikes >= 3) {
+            state.mutes.set(cid, now + 60000); // 连续刷屏 → 自动禁言 1 分钟（与用户管理同源）
+            socket.emit('system_message', { room, text: '发言过于频繁，已临时禁言 1 分钟' });
+            rec.strikes = 0;
+          } else {
+            socket.emit('system_message', { room, text: '发送太频繁，请稍后再发' });
+          }
+          state.rateHits.set(cid, rec);
+          return;
+        }
+        rec.times.push(now);
+        if (now - rec.lastStrikeAt > rlWin) rec.strikes = 0; // 长时间未刷屏 → 衰减
+        state.rateHits.set(cid, rec);
+      }
     }
     // 群聊房需校验成员身份；main 公共房所有人可发
     if (room !== 'main') {
@@ -181,6 +209,23 @@ function register(ioRef, socket) {
         text: `${socket.data.nickname} 清空了聊天历史${data && data.includeStrokes ? '与白板' : ''}`,
         timestamp: Date.now()
       });
+    } catch (e) {
+      cb({ ok: false, error: e.message });
+    }
+  });
+
+  // 历史分页：取 beforeId（AUTOINCREMENT 数字 id）之前的更早消息（升序；用于往上滚懒加载）
+  socket.on('history_page', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    const room = String((data && data.room) || 'main');
+    if (room !== 'main' && !canSendToRoom(room, socket.data.clientId)) {
+      return cb({ ok: false, error: '无权限' });
+    }
+    const beforeId = Number((data && data.beforeId) || 0);
+    if (!beforeId) return cb({ ok: false, error: '缺少 beforeId' });
+    const limit = Math.min(Math.max(Number((data && data.limit) || 50), 1), 200);
+    try {
+      cb({ ok: true, room, history: decorateHistory(store.getMessagesBefore(room, beforeId, limit)) });
     } catch (e) {
       cb({ ok: false, error: e.message });
     }

@@ -149,6 +149,10 @@ try {
   console.warn('  群聊房间: 恢复失败 —', e.message);
 }
 
+// 恢复持久化的用户管理状态（剔除/禁言/禁机器人）与房间级机器人覆盖
+rtAdmin.loadUserAdminFromDb();
+rtBot.loadRoomBotFromDb();
+
 // 翻译引擎探测（自动发现本机 LibreTranslate）完成后再对外服务
 rtTranslate.detectEngine().finally(() => {
 server.listen(PORT, '0.0.0.0', () => {
