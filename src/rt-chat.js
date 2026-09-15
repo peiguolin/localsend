@@ -20,6 +20,14 @@ function register(ioRef, socket) {
     const text = String((data && data.text) || '').trim();
     if (!text || text.length > 5000) return;
     const room = String((data && data.room) || 'main');
+    // 禁言校验：该 clientId 在禁言中 → 拒绝发言（仅提示本人，不入库/广播）
+    const muteUntil = state.mutes.get(socket.data.clientId) || 0;
+    if (muteUntil > Date.now()) {
+      socket.emit('system_message', { room, text: `你已被禁言，至 ${new Date(muteUntil).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 后可发言` });
+      return;
+    } else if (muteUntil) {
+      state.mutes.delete(socket.data.clientId); // 过期清理
+    }
     // 群聊房需校验成员身份；main 公共房所有人可发
     if (room !== 'main') {
       const gr = groupRooms.get(room);

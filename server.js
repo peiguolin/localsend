@@ -27,6 +27,7 @@ const rtCalendar = require('./src/rt-calendar');
 const rtTranslate = require('./src/rt-translate');
 const rtConfig = require('./src/rt-config');
 const rtBot = require('./src/rt-bot');
+const rtAdmin = require('./src/rt-admin');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -50,6 +51,12 @@ io.on('connection', (socket) => {
   // 持久身份（握手带来）：用于群聊成员身份与房间恢复
   const clientId = String((socket.handshake.auth && socket.handshake.auth.clientId) || '');
   socket.data.clientId = clientId;
+  // 封禁校验：被剔除的 clientId 直接断开，不允许进入聊天室
+  if (clientId && state.bans.has(clientId)) {
+    socket.emit('system_message', { text: '你已被移出聊天室，无法重新加入' });
+    socket.disconnect(true);
+    return;
+  }
   // 始终加入公共房
   socket.join('main');
   state.onlineUsers.set(socket.id, socket.data.nickname);
@@ -95,6 +102,7 @@ io.on('connection', (socket) => {
   rtScreenshare.register(io, socket);
   rtShare.register(io, socket);
   rtCalendar.register(io, socket);
+  rtAdmin.register(io, socket);
 
   // 断线：按域清理（注意顺序：通话清理需要 onlineUsers 里的昵称，先清域再删在线表）
   socket.on('disconnect', () => {

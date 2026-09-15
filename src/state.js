@@ -22,5 +22,10 @@ module.exports = {
   wbCursors: new Map(),        // socketId -> {x, y} 最后上报的光标位置
 
   // 屏幕共享（全站同时一个）：null | { presenterId, presenterName, startedAt, viewers:Set<socketId> }
-  screenShare: null
+  screenShare: null,
+
+  // 用户管理（宿主机操作；内存态，重启不持久）
+  mutes: new Map(),          // clientId -> 禁言截止时间戳（untilTs）
+  botBans: new Set(),        // clientId（禁止 @机器人 触发）
+  bans: new Map()            // clientId -> { nickname, at }（封禁：禁止重新连接）
 };

@@ -5,6 +5,7 @@
  * 触发：仅 @提及（预留自动回复槽位，后续在 botTrigger 配置上扩展）。
  * 注意：API Key 只在服务端持有，GET /api/config 由 rt-config 掩码，客户端不可见。 */
 const store = require('../db.js');
+const state = require('./state');
 const { currentConfig } = require('./config');
 const { chatLog, nextMsgId, chatLogPush } = require('./chatlog');
 
@@ -74,6 +75,8 @@ function register(io, socket) {
     if (!cfg.botEnabled) return;
     const text = String((data && data.text) || '').trim();
     if (!text || !mentionsBot(text, cfg.botName)) return; // 目前仅 @提及触发
+    // 该用户被禁止 @机器人 → 静默不触发
+    if (state.botBans.has(String(socket.data.clientId || ''))) return;
     const room = String((data && data.room) || 'main');
     if (generating.has(room)) return; // 该房间生成中，忽略重复触发
     generating.add(room);

@@ -3174,3 +3174,52 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
   margin-left: auto;
   flex-shrink: 0;
 }
+
+/* ===== 用户管理 ===== */
+.user-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.user-nick { font-size: 13px; font-weight: 600; color: var(--text); }
+.user-cid { font-size: 11px; color: var(--text-faint); margin-left: auto; }
+
+.user-badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.user-badge.local { background: rgba(22, 163, 74, 0.1); color: var(--success); }
+.user-badge.mute, .user-badge.banned { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
+.user-badge.bot { background: rgba(217, 119, 6, 0.12); color: #d97706; }
+
+.user-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.user-action {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.user-action:hover { border-color: var(--accent); color: var(--accent); }
+.user-action.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+.user-manage-tip { font-size: 12.5px; color: var(--text-secondary); padding: 6px 0; }
+.user-section-title { font-size: 12px; font-weight: 650; color: var(--text-faint); margin-top: 8px; }

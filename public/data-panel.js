@@ -136,7 +136,9 @@
     { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'msgTtlDays'] },
     { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
-    { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botPrompt', 'botContextN', 'botTimeoutMs'] }
+    { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
+    // 用户管理：非静态配置，special 视图（在线用户列表 + 剔除/禁言/机器人权限）
+    { id: 'users',    title: '用户管理',   desc: '在线用户 · 剔除 / 禁言 / 机器人权限', fields: [], special: 'users', countLabel: '在线管理' }
   ];
 
   let currentCfg = null;      // 最近一次拉取/保存后的生效配置（含 *Restart 标记）
@@ -200,7 +202,7 @@
       card.innerHTML =
         `<span class="data-config-card-title">${escapeHtml(g.title)}</span>` +
         `<span class="data-config-card-desc">${escapeHtml(g.desc)}</span>` +
-        `<span class="data-config-card-count">${g.fields.length} 项配置</span>`;
+        `<span class="data-config-card-count">${escapeHtml(g.countLabel || g.fields.length + ' 项配置')}</span>`;
       card.addEventListener('click', () => openConfigForm(g.id));
       dataConfigCards.appendChild(card);
     }
@@ -212,10 +214,17 @@
     if (!g) return;
     currentGroupId = groupId;
     dataConfigFormTitle.textContent = g.title;
-    renderConfigCard(g.fields);
     dataConfigTip.textContent = '';
     dataConfigTip.className = 'data-config-tip';
     dataConfigReloadBtn.hidden = true;
+    if (g.special === 'users') {
+      // 用户管理：无静态表单/保存按钮，渲染在线用户列表
+      dataConfigSaveBtn.hidden = true;
+      renderUserManage();
+    } else {
+      dataConfigSaveBtn.hidden = false;
+      renderConfigCard(g.fields);
+    }
     dataConfigCards.hidden = true;
     dataConfigForm.hidden = false;
   }
@@ -277,6 +286,113 @@
     }
   });
   dataConfigReloadBtn.addEventListener('click', () => window.location.reload());
+
+  // ---------- 用户管理（宿主机；在线用户列表 + 剔除/禁言/机器人权限） ----------
+  function tipEl(text) {
+    const d = document.createElement('div');
+    d.className = 'user-manage-tip';
+    d.textContent = text;
+    return d;
+  }
+
+  function actionBtn(text, fn, cls) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'user-action' + (cls ? ' ' + cls : '');
+    b.textContent = text;
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  // 发出管理操作并刷新列表
+  function adminAction(event, payload) {
+    socket.emit(event, payload, (res) => {
+      if (!res || !res.ok) {
+        dataConfigTip.textContent = (res && res.error) || '操作失败';
+        dataConfigTip.className = 'data-config-tip err';
+      } else {
+        dataConfigTip.textContent = '已操作';
+        dataConfigTip.className = 'data-config-tip';
+        renderUserManage();
+      }
+    });
+  }
+
+  function userRow(u) {
+    const row = document.createElement('div');
+    row.className = 'user-row';
+    const cid = String(u.clientId || '');
+    const cidShort = cid ? '…' + cid.slice(-6) : '(无 ID)';
+    let badges = '';
+    if (u.isLocal) badges += '<span class="user-badge local">宿主机</span>';
+    if (u.mutedUntil) badges += '<span class="user-badge mute">禁言中</span>';
+    if (u.botBanned) badges += '<span class="user-badge bot">禁机器人</span>';
+    const info = document.createElement('div');
+    info.className = 'user-info';
+    info.innerHTML = `<span class="user-nick">${escapeHtml(u.nickname)}</span>${badges}<span class="user-cid">${escapeHtml(cidShort)}</span>`;
+    row.appendChild(info);
+
+    if (u.isLocal) return row; // 宿主机连接不显示操作按钮
+
+    const actions = document.createElement('div');
+    actions.className = 'user-actions';
+    if (u.mutedUntil) {
+      actions.appendChild(actionBtn('解禁', () => adminAction('admin_mute', { clientId: u.clientId, minutes: 0 })));
+    } else {
+      actions.appendChild(actionBtn('禁言15分', () => adminAction('admin_mute', { clientId: u.clientId, minutes: 15 })));
+      actions.appendChild(actionBtn('禁言1小时', () => adminAction('admin_mute', { clientId: u.clientId, minutes: 60 })));
+      actions.appendChild(actionBtn('禁言1天', () => adminAction('admin_mute', { clientId: u.clientId, minutes: 1440 })));
+    }
+    if (u.botBanned) {
+      actions.appendChild(actionBtn('解禁机器人', () => adminAction('admin_botban', { clientId: u.clientId, banned: false })));
+    } else {
+      actions.appendChild(actionBtn('禁机器人', () => adminAction('admin_botban', { clientId: u.clientId, banned: true })));
+    }
+    actions.appendChild(actionBtn('剔除', () => {
+      if (!confirm(`确定剔除「${u.nickname}」吗？\n该用户将被封禁，无法重新加入（可在下方"已封禁"区解除）。`)) return;
+      adminAction('admin_kick', { clientId: u.clientId });
+    }, 'danger'));
+    row.appendChild(actions);
+    return row;
+  }
+
+  function bannedRow(b) {
+    const row = document.createElement('div');
+    row.className = 'user-row';
+    const cid = String(b.clientId || '');
+    const cidShort = cid ? '…' + cid.slice(-6) : '';
+    const info = document.createElement('div');
+    info.className = 'user-info';
+    info.innerHTML = `<span class="user-nick">${escapeHtml(b.nickname || cidShort)}</span><span class="user-badge banned">已封禁</span><span class="user-cid">${escapeHtml(cidShort)}</span>`;
+    const actions = document.createElement('div');
+    actions.className = 'user-actions';
+    actions.appendChild(actionBtn('解除封禁', () => adminAction('admin_unban', { clientId: b.clientId })));
+    row.appendChild(info);
+    row.appendChild(actions);
+    return row;
+  }
+
+  function renderUserManage() {
+    dataConfigGrid.innerHTML = '';
+    dataConfigGrid.appendChild(tipEl('加载中…'));
+    socket.emit('admin_users', (res) => {
+      dataConfigGrid.innerHTML = '';
+      if (!res || !res.ok) {
+        dataConfigGrid.appendChild(tipEl((res && res.error) || '加载失败'));
+        return;
+      }
+      const users = (res.users || []).slice().sort((a, b) => (a.nickname || '').localeCompare(b.nickname || ''));
+      if (!users.length) dataConfigGrid.appendChild(tipEl('暂无在线用户'));
+      for (const u of users) dataConfigGrid.appendChild(userRow(u));
+      if (res.banned && res.banned.length) {
+        const h = document.createElement('div');
+        h.className = 'user-section-title';
+        h.textContent = '已封禁';
+        dataConfigGrid.appendChild(h);
+        for (const b of res.banned) dataConfigGrid.appendChild(bannedRow(b));
+      }
+    });
+  }
 
   // ---------- 事件绑定 ----------
   window.chatApp.registerTab('data', tabData, [dataView]);
