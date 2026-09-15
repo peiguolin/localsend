@@ -430,17 +430,19 @@
   window.addEventListener('drop', (e) => e.preventDefault());
 
   // 暴露给各功能分片（share/whiteboard/screen-share/data-panel/calendar 等复用同一 socket 与工具函数）
-  // state 为共享运行时状态对象，各分片经 window.chatApp.state 读写同一份状态；
-  // 下面同时把壳的跨分片基建挂到 chatApp，功能分片再各自补充导出。
-  window.chatApp = Object.assign(window.chatApp || {}, {
-    socket,
-    state,
-    utils: Object.assign({}, (window.chatApp && window.chatApp.utils) || {}, { fmtTime, fmtSize, escapeHtml }),
-    get nickname() { return state.myNickname; },
-    get isLocal() { return state.isLocalHost; },
-    get rooms() { return state.myRooms; },
-    get clientId() { return state.myClientId; },
-    // 壳提供的跨分片基建
+  // state 为共享运行时状态对象，各分片经 window.chatApp.state 读写同一份状态。
+  // 注意：getter 必须用 defineProperty 定义——Object.assign 会把源 getter 快照成静态值，
+  // 导致 isLocal/rooms/nickname 停在加载时（false/[]/''），welcome 后的宿主机门禁与房间查找全失效。
+  const chatApp = window.chatApp || {};
+  chatApp.socket = socket;
+  chatApp.state = state;
+  chatApp.utils = Object.assign({}, chatApp.utils || {}, { fmtTime, fmtSize, escapeHtml });
+  Object.defineProperty(chatApp, 'nickname', { get: () => state.myNickname, enumerable: true, configurable: true });
+  Object.defineProperty(chatApp, 'isLocal', { get: () => state.isLocalHost, enumerable: true, configurable: true });
+  Object.defineProperty(chatApp, 'rooms', { get: () => state.myRooms, enumerable: true, configurable: true });
+  Object.defineProperty(chatApp, 'clientId', { get: () => state.myClientId, enumerable: true, configurable: true });
+  // 壳提供的跨分片基建
+  Object.assign(chatApp, {
     setHint,
     appendMsg,
     isNearBottom,
@@ -452,4 +454,5 @@
     closeDrawer,
     openDrawer
   });
+  window.chatApp = chatApp;
 })();
