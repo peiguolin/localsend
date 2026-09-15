@@ -245,11 +245,17 @@
 
         <div class="data-config" id="dataConfigBox" hidden>
           <span class="sidebar-title">服务器配置（仅宿主机）</span>
-          <div class="data-config-grid" id="dataConfigGrid"></div>
-          <div class="data-config-tip" id="dataConfigTip"></div>
-          <div class="data-actions">
-            <button class="tool-btn" id="dataConfigSaveBtn" type="button">保存配置</button>
-            <button class="tool-btn" id="dataConfigReloadBtn" type="button" hidden>重新加载</button>
+          <!-- 按模块分组的配置卡片：点击卡片进入该模块的表单 -->
+          <div class="data-config-cards" id="dataConfigCards"></div>
+          <div class="data-config-form" id="dataConfigForm" hidden>
+            <button class="data-config-back" id="dataConfigBack" type="button">← 返回模块列表</button>
+            <div class="data-config-form-title" id="dataConfigFormTitle"></div>
+            <div class="data-config-grid" id="dataConfigGrid"></div>
+            <div class="data-config-tip" id="dataConfigTip"></div>
+            <div class="data-actions">
+              <button class="tool-btn" id="dataConfigSaveBtn" type="button">保存配置</button>
+              <button class="tool-btn" id="dataConfigReloadBtn" type="button" hidden>重新加载</button>
+            </div>
           </div>
         </div>
       </div>

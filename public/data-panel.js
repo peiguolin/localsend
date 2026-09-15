@@ -110,7 +110,12 @@
   }
 
   // ---------- 服务器配置卡（仅宿主机） ----------
+  // 按模块分组：卡片网格 → 点击卡片进入该模块的表单
   const dataConfigBox = document.getElementById('dataConfigBox');
+  const dataConfigCards = document.getElementById('dataConfigCards');
+  const dataConfigForm = document.getElementById('dataConfigForm');
+  const dataConfigBack = document.getElementById('dataConfigBack');
+  const dataConfigFormTitle = document.getElementById('dataConfigFormTitle');
   const dataConfigGrid = document.getElementById('dataConfigGrid');
   const dataConfigTip = document.getElementById('dataConfigTip');
   const dataConfigSaveBtn = document.getElementById('dataConfigSaveBtn');
@@ -122,27 +127,77 @@
     remindTickMs: '日程提醒轮询(ms)', translateUrl: '翻译引擎地址(即时生效)', translateGtx: '允许谷歌免费端点回退'
   };
 
-  function renderConfigCard(cfg) {
+  // 按模块分组的配置项
+  const CONFIG_GROUPS = [
+    { id: 'network',  title: '服务与网络', desc: '服务端口 · 宿主机地址白名单', fields: ['port', 'localAddrs'] },
+    { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'msgTtlDays'] },
+    { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
+    { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] }
+  ];
+
+  let currentCfg = null;      // 最近一次拉取/保存后的生效配置（含 *Restart 标记）
+  let currentGroupId = null;  // 当前打开的表单所属模块
+
+  // 渲染单个模块的表单（只画该模块的字段）
+  function renderConfigCard(fields) {
     dataConfigGrid.innerHTML = '';
-    for (const [k, label] of Object.entries(CONFIG_LABELS)) {
+    for (const k of fields) {
+      const label = CONFIG_LABELS[k];
+      if (!label) continue;
       const row = document.createElement('label');
       row.className = 'data-config-item';
-      const needsRestart = cfg[k + 'Restart'];
+      const needsRestart = currentCfg && currentCfg[k + 'Restart'];
       row.innerHTML = `<span class="data-config-label">${escapeHtml(label)}${needsRestart ? ' <em>重启</em>' : ''}</span>`;
       const input = document.createElement('input');
       input.className = 'modal-input';
       input.dataset.key = k;
       if (k === 'translateGtx') {
         input.type = 'checkbox';
-        input.checked = !!cfg[k];
+        input.checked = !!(currentCfg && currentCfg[k]);
         input.classList.add('data-config-check');
       } else {
         input.type = k === 'port' || k.endsWith('Days') || k.endsWith('MB') || k.endsWith('Ms') ? 'number' : 'text';
-        input.value = cfg[k] === undefined ? '' : String(cfg[k]);
+        input.value = currentCfg && currentCfg[k] !== undefined ? String(currentCfg[k]) : '';
       }
       row.appendChild(input);
       dataConfigGrid.appendChild(row);
     }
+  }
+
+  // 渲染模块卡片网格
+  function renderConfigCards() {
+    dataConfigCards.innerHTML = '';
+    for (const g of CONFIG_GROUPS) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'data-config-card';
+      card.innerHTML =
+        `<span class="data-config-card-title">${escapeHtml(g.title)}</span>` +
+        `<span class="data-config-card-desc">${escapeHtml(g.desc)}</span>` +
+        `<span class="data-config-card-count">${g.fields.length} 项配置</span>`;
+      card.addEventListener('click', () => openConfigForm(g.id));
+      dataConfigCards.appendChild(card);
+    }
+  }
+
+  // 进入某模块的表单
+  function openConfigForm(groupId) {
+    const g = CONFIG_GROUPS.find((x) => x.id === groupId);
+    if (!g) return;
+    currentGroupId = groupId;
+    dataConfigFormTitle.textContent = g.title;
+    renderConfigCard(g.fields);
+    dataConfigTip.textContent = '';
+    dataConfigTip.className = 'data-config-tip';
+    dataConfigReloadBtn.hidden = true;
+    dataConfigCards.hidden = true;
+    dataConfigForm.hidden = false;
+  }
+
+  function backConfigForm() {
+    currentGroupId = null;
+    dataConfigForm.hidden = true;
+    dataConfigCards.hidden = false;
   }
 
   function loadConfigCard() {
@@ -150,13 +205,17 @@
       .then((r) => r.json())
       .then((j) => {
         if (!j || !j.ok) return;
-        renderConfigCard(j.config);
+        currentCfg = j.config;
+        renderConfigCards();
         dataConfigBox.hidden = false;
       })
       .catch(() => { dataConfigBox.hidden = true; });
   }
 
+  dataConfigBack.addEventListener('click', backConfigForm);
+
   dataConfigSaveBtn.addEventListener('click', async () => {
+    const g = CONFIG_GROUPS.find((x) => x.id === currentGroupId);
     const updates = {};
     dataConfigGrid.querySelectorAll('input').forEach((el) => {
       const k = el.dataset.key;
@@ -179,7 +238,9 @@
           : '已保存';
         dataConfigTip.className = 'data-config-tip';
         dataConfigReloadBtn.hidden = !restart;
-        renderConfigCard(j.config);
+        currentCfg = j.config;
+        if (g) renderConfigCard(g.fields); // 刷新当前表单（更新「重启」徽标）
+        renderConfigCards();               // 刷新卡片列表
       }
     } catch (_) {
       dataConfigTip.textContent = '保存失败（网络错误）';
