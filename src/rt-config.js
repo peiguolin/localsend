@@ -3,6 +3,17 @@
 const { currentConfig, writeConfigFile, CONFIG_DEFS } = require('./config');
 const { isLocalAddr } = require('./util');
 const rtTranslate = require('./rt-translate');
+const store = require('../db.js');
+
+// 记录一次配置变更到审计日志（apiKey 只记键名不记值）
+function auditConfig(keys) {
+  try {
+    store.insertAudit({
+      actor: '宿主机(配置面板)', action: 'config', target: '',
+      detail: '修改配置: ' + keys.join('、')
+    });
+  } catch (_) { /* DB 不可用不阻塞 */ }
+}
 
 function registerRoutes(app) {
   app.get('/api/config', (req, res) => {
@@ -39,6 +50,7 @@ function registerRoutes(app) {
       if ('translateUrl' in updates) {
         await rtTranslate.reload();
       }
+      auditConfig(keys);
       res.json({ ok: true, ...result });
     } catch (e) {
       res.status(500).json({ ok: false, error: `保存失败：${e.message}` });

@@ -36,6 +36,26 @@ function register(io, socket) {
   const guard = () => isLocalSocket(socket);
   const deny = (cb) => cb && cb({ ok: false, error: '仅宿主机可操作' });
 
+  // 写一条审计日志（target 尽量解析为昵称，失败退回 clientId）
+  function audit(action, targetCid, detail) {
+    let targetName = '';
+    for (const [, s] of io.sockets.sockets) {
+      if (String(s.data.clientId || '') === targetCid) { targetName = s.data.nickname || ''; break; }
+    }
+    if (!targetName) {
+      const ban = state.bans.get(targetCid);
+      if (ban) targetName = ban.nickname || '';
+    }
+    try {
+      store.insertAudit({
+        actor: socket.data.nickname || '宿主机',
+        action,
+        target: targetName || String(targetCid || ''),
+        detail: detail || ''
+      });
+    } catch (_) { /* DB 不可用不阻塞管理操作 */ }
+  }
+
   // 当前在线用户（含其禁言/禁机器人/封禁状态）
   function listUsers() {
     const out = [];
@@ -79,6 +99,7 @@ function register(io, socket) {
     }
     state.bans.set(cid, { nickname, at: Date.now() });
     persistUserAdmin(cid);
+    audit('kick', cid, `剔除并封禁（断开 ${kicked} 个连接）`);
     cb && cb({ ok: true, kicked });
   });
 
@@ -88,6 +109,7 @@ function register(io, socket) {
     const cid = String((data && data.clientId) || '');
     state.bans.delete(cid);
     persistUserAdmin(cid);
+    audit('unban', cid, '解除封禁');
     cb && cb({ ok: true });
   });
 
@@ -100,9 +122,11 @@ function register(io, socket) {
     if (minutes > 0) {
       const until = Date.now() + minutes * 60000;
       state.mutes.set(cid, until);
+      audit('mute', cid, `禁言 ${minutes} 分钟`);
       cb && cb({ ok: true, mutedUntil: until });
     } else {
       state.mutes.delete(cid);
+      audit('unmute', cid, '解除禁言');
       cb && cb({ ok: true, mutedUntil: 0 });
     }
     persistUserAdmin(cid);
@@ -113,10 +137,19 @@ function register(io, socket) {
     if (!guard()) return deny(cb);
     const cid = String((data && data.clientId) || '');
     if (!cid) return cb && cb({ ok: false, error: '缺少 clientId' });
-    if (data && data.banned) state.botBans.add(cid);
-    else state.botBans.delete(cid);
+    if (data && data.banned) { state.botBans.add(cid); audit('botban', cid, '禁止 @机器人'); }
+    else { state.botBans.delete(cid); audit('unbotban', cid, '恢复 @机器人'); }
     persistUserAdmin(cid);
     cb && cb({ ok: true });
+  });
+
+  // 查最近审计日志（仅宿主机）
+  socket.on('admin_audit', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    let rows = [];
+    try { rows = store.listAudit((data && data.limit) || 50); } catch (_) { rows = []; }
+    cb && cb({ ok: true, entries: rows });
   });
 }
 

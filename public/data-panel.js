@@ -394,6 +394,52 @@
         for (const b of res.banned) dataConfigGrid.appendChild(bannedRow(b));
       }
     });
+    renderAuditLog();
+  }
+
+  // ---------- 管理操作审计日志（最近 N 条） ----------
+  const AUDIT_LABELS = {
+    kick: '剔除封禁', unban: '解除封禁',
+    mute: '禁言', unmute: '解除禁言',
+    botban: '禁机器人', unbotban: '恢复机器人',
+    config: '修改配置'
+  };
+
+  function fmtAuditTime(ts) {
+    const d = new Date(ts || Date.now());
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function renderAuditLog() {
+    socket.emit('admin_audit', { limit: 50 }, (res) => {
+      // 用户管理视图可能已切走：仅当当前仍是该视图时渲染
+      if (currentGroupId !== 'users') return;
+      const entries = (res && res.entries) || [];
+      const h = document.createElement('div');
+      h.className = 'user-section-title';
+      h.textContent = '操作日志';
+      dataConfigGrid.appendChild(h);
+      if (!entries.length) {
+        dataConfigGrid.appendChild(tipEl('暂无管理操作记录'));
+        return;
+      }
+      const box = document.createElement('div');
+      box.className = 'audit-log';
+      for (const e of entries) {
+        const row = document.createElement('div');
+        row.className = 'audit-row';
+        const label = AUDIT_LABELS[e.action] || e.action;
+        const target = e.target ? ` → ${e.target}` : '';
+        row.innerHTML =
+          `<span class="audit-time">${escapeHtml(fmtAuditTime(e.at))}</span>` +
+          `<span class="audit-actor">${escapeHtml(e.actor)}</span>` +
+          `<span class="audit-action">${escapeHtml(label)}${escapeHtml(target)}</span>` +
+          (e.detail ? `<span class="audit-detail">${escapeHtml(e.detail)}</span>` : '');
+        box.appendChild(row);
+      }
+      dataConfigGrid.appendChild(box);
+    });
   }
 
   // ---------- 事件绑定 ----------

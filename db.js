@@ -105,6 +105,15 @@ function init() {
       enabled INTEGER,
       prompt TEXT
     );
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      actor TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL,
+      target TEXT NOT NULL DEFAULT '',
+      detail TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -566,6 +575,25 @@ function setRoomBot(room, enabled, prompt) {
   );
 }
 
+// ---------- 管理审计日志（剔除/禁言/禁机器人/改配置；宿主机可翻，跨重启保留） ----------
+function insertAudit(entry) {
+  const d = getDb();
+  d.prepare('INSERT INTO audit_log (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)').run(
+    entry.at || Date.now(),
+    String(entry.actor || ''),
+    String(entry.action || ''),
+    String(entry.target || ''),
+    String(entry.detail || '')
+  );
+}
+
+function listAudit(limit) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT at, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?
+  `).all(Math.min(Number(limit) || 50, 200));
+}
+
 module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
@@ -575,5 +603,6 @@ module.exports = {
   createRoom, loadRooms, updateRoom, deleteRoom,
   createEvent, listEvents, getEvent, deleteEvent, listUnfiredReminders, markEventReminded,
   getTranslation, saveTranslation,
-  loadUserAdmin, setUserAdmin, getMessagesBefore, loadRoomBot, setRoomBot
+  loadUserAdmin, setUserAdmin, getMessagesBefore, loadRoomBot, setRoomBot,
+  insertAudit, listAudit
 };
