@@ -1,8 +1,8 @@
-// DOM 桩冒烟测试：粘贴截图即发送（方案 A）
+// DOM 桩冒烟测试：粘贴截图 → 入待发预览托盘（不再立即发送）
 // 验证：
-//  - 剪贴板含图片时粘贴 → 接管（preventDefault）+ 走 uploadFile 上传链路
-//  - 纯文本粘贴 → 不接管、不触发上传
-//  - 群聊弹窗打开时粘贴 → 不接管
+//  - 剪贴板含图片时粘贴 → 接管（preventDefault）+ 入托盘，不触发上传
+//  - sendAttachment(配文) → 才走上传链路，complete 带 text 配文
+//  - 纯文本粘贴 → 不接管；群聊弹窗打开时粘贴 → 不接管
 'use strict';
 const path = require('path');
 
@@ -112,6 +112,9 @@ global.fetch = (url, opts) => {
 
 const lsStore = { 'localsend-client-id': 'c-test-user' };
 global.localStorage = { getItem: (k) => (k in lsStore ? lsStore[k] : null), setItem: (k, v) => { lsStore[k] = String(v); }, removeItem: (k) => { delete lsStore[k]; } };
+global.URL = global.URL || {};
+global.URL.createObjectURL = () => 'blob:stub';
+global.URL.revokeObjectURL = () => {};
 global.window = windowStub;
 global.document = documentStub;
 global.CSS = { escape: (s) => String(s) };
@@ -139,8 +142,11 @@ const pasteHandler = ((documentStub._listeners && documentStub._listeners.paste)
 assert(!!pasteHandler, 'paste 监听已注册');
 
 (async () => {
-  // ---------- 场景 1：剪贴板含图片 → 接管 + 上传 ----------
-  console.log('--- 图片粘贴：接管并发送 ---');
+  const app = window.chatApp;
+  const tray = byId['attachTray'];
+
+  // ---------- 场景 1：剪贴板含图片 → 接管 + 入托盘（不立即上传） ----------
+  console.log('--- 图片粘贴：接管并入待发托盘 ---');
   let prevented = false;
   const imgBlob = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'clip.png', { type: 'image/png' });
   const before = fetchCalls.length;
@@ -149,19 +155,27 @@ assert(!!pasteHandler, 'paste 监听已注册');
     preventDefault: () => { prevented = true; }
   });
   assert(prevented === true, '图片粘贴被接管（preventDefault）');
-  await sleep(50); // 等 uploadFile 异步链完成
+  await sleep(20);
+  assert(app.hasPendingAttachment() === true, '附件进入待发托盘');
+  assert(tray.hidden === false && String(tray.innerHTML).includes('粘贴图片-'), '托盘显示待发图片');
+  assert(fetchCalls.length === before, '入托盘阶段不触发上传');
+
+  // ---------- 场景 2：发送（带配文）→ 才走上传链路，complete 带 text ----------
+  console.log('--- 发送附件 + 配文 ---');
+  const res = await app.sendAttachment('这是图片说明 @机器人');
+  assert(res && res.ok === true, 'sendAttachment 返回成功');
   const initCall = fetchCalls.find((c) => c.url.includes('/upload/init'));
   assert(!!initCall, '发起 /upload/init');
-  assert(!!initCall && String(initCall.opts.body).includes(encodeURIComponent('粘贴图片-')), 'init 文件名含「粘贴图片」');
   const completeCall = fetchCalls.find((c) => c.url.includes('/upload/complete'));
   assert(!!completeCall, '发起 /upload/complete');
-  const compFd = completeCall && completeCall.opts.body;
-  const compEntries = compFd && typeof compFd.entries === 'function' ? Array.from(compFd.entries()) : [];
+  const compEntries = completeCall && typeof completeCall.opts.body.entries === 'function' ? Array.from(completeCall.opts.body.entries()) : [];
   const origName = String((compEntries.find(([k]) => k === 'originalName') || [])[1] || '');
-  assert(!!completeCall && origName.includes(encodeURIComponent('粘贴图片-')), 'complete originalName 含「粘贴图片」', origName);
-  assert(fetchCalls.length > before, '上传链路被触发');
+  assert(origName.includes(encodeURIComponent('粘贴图片-')), 'complete originalName 含「粘贴图片」', origName);
+  const caption = String((compEntries.find(([k]) => k === 'text') || [])[1] || '');
+  assert(caption === '这是图片说明 @机器人', 'complete 带文字配文', caption);
+  assert(app.hasPendingAttachment() === false, '发送成功后清空托盘');
 
-  // ---------- 场景 2：纯文本粘贴 → 不接管 ----------
+  // ---------- 场景 3：纯文本粘贴 → 不接管 ----------
   console.log('--- 纯文本粘贴：不拦截 ---');
   const textBefore = fetchCalls.length;
   let prevented2 = false;
@@ -170,39 +184,37 @@ assert(!!pasteHandler, 'paste 监听已注册');
     preventDefault: () => { prevented2 = true; }
   });
   assert(prevented2 === false, '文本粘贴不 preventDefault');
-  await sleep(30);
-  assert(fetchCalls.length === textBefore, '文本粘贴不触发上传');
+  await sleep(20);
+  assert(fetchCalls.length === textBefore && app.hasPendingAttachment() === false, '文本粘贴不入托盘/不上传');
 
-  // ---------- 场景 3：群聊弹窗打开 → 不接管 ----------
+  // ---------- 场景 4：群聊弹窗打开 → 不接管 ----------
   console.log('--- 群聊弹窗打开时粘贴：不接管 ---');
-  const modalBefore = fetchCalls.length;
-  byId['groupModal'].hidden = false; // 弹窗打开
+  byId['groupModal'].hidden = false;
   let prevented3 = false;
   pasteHandler({
     clipboardData: { items: [{ kind: 'file', type: 'image/png', getAsFile: () => imgBlob }] },
     preventDefault: () => { prevented3 = true; }
   });
-  await sleep(30);
+  await sleep(20);
   assert(prevented3 === false, '弹窗打开时图片粘贴不接管');
-  assert(fetchCalls.length === modalBefore, '弹窗打开时不触发上传');
-  byId['groupModal'].hidden = true; // 关闭，还原
+  assert(app.hasPendingAttachment() === false, '弹窗打开时不入托盘');
+  byId['groupModal'].hidden = true;
 
-  // ---------- 场景 4：Linux 场景——items 读不到图片，Clipboard API 兜底 ----------
-  console.log('--- Linux 兜底：items 无图片 → clipboard.read() 拿到图片发送 ---');
+  // ---------- 场景 5：Linux 兜底——items 无图片，clipboard.read() 拿到图片入托盘 ----------
+  console.log('--- Linux 兜底：clipboard.read() 拿到图片入托盘 ---');
   clipboardStore.image = new File([new Uint8Array([9, 8, 7])], 'screenshot.png', { type: 'image/png' });
   const fbkBefore = fetchCalls.length;
-  let prevented4 = false;
   pasteHandler({
     clipboardData: { items: [{ kind: 'string', type: 'text/plain' }] },
-    preventDefault: () => { prevented4 = true; }
+    preventDefault: () => {}
   });
-  await sleep(60); // 等异步 clipboard.read() + uploadFile 完成
-  const fbkInit = fetchCalls.slice(fbkBefore).find((c) => c.url.includes('/upload/init'));
-  assert(!!fbkInit, '兜底路径发起 /upload/init');
-  assert(!!fbkInit && String(fbkInit.opts.body).includes(encodeURIComponent('粘贴图片-')), '兜底文件名含「粘贴图片」');
+  await sleep(40);
+  assert(app.hasPendingAttachment() === true, '兜底图片入托盘');
+  assert(fetchCalls.length === fbkBefore, '兜底入托盘阶段不上传');
+  app.clearAttachment();
   clipboardStore.image = null;
 
-  // ---------- 场景 5：items 有 file 但非图片 + 剪贴板无图 → 诊断提示 ----------
+  // ---------- 场景 6：file 但非图片 + 剪贴板无图 → 诊断提示 ----------
   console.log('--- 剪贴板无法读取为图片 → 诊断提示 ---');
   const diagBefore = fetchCalls.length;
   byId['uploadHint']._text = '';
@@ -210,9 +222,9 @@ assert(!!pasteHandler, 'paste 监听已注册');
     clipboardData: { items: [{ kind: 'file', type: 'application/octet-stream', getAsFile: () => new File([new Uint8Array([1])], 'x.bin', { type: 'application/octet-stream' }) }] },
     preventDefault: () => {}
   });
-  await sleep(60);
+  await sleep(40);
   assert(!!byId['uploadHint']._text && byId['uploadHint']._text.includes('无法读取为图片'), '给出诊断提示');
-  assert(fetchCalls.length === diagBefore, '诊断场景不触发上传');
+  assert(fetchCalls.length === diagBefore && app.hasPendingAttachment() === false, '诊断场景不入托盘/不上传');
 
   console.log(failures === 0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
   process.exit(failures === 0 ? 0 : 1);

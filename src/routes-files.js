@@ -10,9 +10,10 @@ const {
 } = require('./config');
 const { decodeOriginalName } = require('./util');
 const { saveMeta, getOriginalName, detectImageMime, STORED_NAME_RE, resolveStoredFile } = require('./filemeta');
-const { nextMsgId, chatLogPush } = require('./chatlog');
+const { nextMsgId, chatLogPush, parseMentions } = require('./chatlog');
 const { canSendToRoom } = require('./rt-rooms');
 const { isLocalAddr } = require('./util');
+const { checkAllowed } = require('./moderation');
 
 function registerRoutes(app, io) {
   // ---------- 文件上传（multer，按类型/日期归档） ----------
@@ -53,16 +54,25 @@ function registerRoutes(app, io) {
     // req.file.relPath 是归档目录（如 text/20260911），必须拼上文件名，否则下载解析不到文件
     const relPath = req.file.relPath ? path.join(req.file.relPath, storedName) : storedName;
 
-    // 记录原始文件名 + 归档相对路径，供下载时还原 Content-Disposition / 定位文件
-    saveMeta(storedName, originalName, size, relPath);
-
     const nickname = (req.body && req.body.nickname) || '匿名';
     const clientId = String((req.body && req.body.clientId) || '');
     const room = String((req.body && req.body.room) || 'main');
     if (!canSendToRoom(room, clientId)) {
+      fs.rmSync(req.file.path, { force: true });
       return res.status(403).json({ ok: false, error: '你不在该房间中，无法发送' });
     }
-    const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now() };
+    // 禁言 / 限流（与文字消息同一套）：拒绝并删掉刚落地的文件
+    const denied = checkAllowed(clientId);
+    if (denied) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(403).json({ ok: false, error: denied });
+    }
+
+    // 记录原始文件名 + 归档相对路径，供下载时还原 Content-Disposition / 定位文件
+    saveMeta(storedName, originalName, size, relPath);
+
+    const caption = String((req.body && req.body.text) || '').trim().slice(0, 5000);
+    const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size, downloadUrl, timestamp: Date.now(), ...(caption ? { text: caption, mentions: parseMentions(caption) } : {}) };
 
     // 图片文件：广播 type:'image' 并带上预览地址，前端直接渲染在线预览
     const mime = detectImageMime(storedName, req.file.path);
@@ -217,8 +227,6 @@ function registerRoutes(app, io) {
           return res.status(400).json({ ok: false, error: '合并后文件大小与预期不符' });
         }
 
-        // 记录元数据 + 进入聊天消息流程
-        saveMeta(storedName, originalName, actualSize, relPath);
         const nickname = String((req.body && req.body.nickname) || '匿名');
         const clientId = String((req.body && req.body.clientId) || '');
         const room = String((req.body && req.body.room) || 'main');
@@ -227,8 +235,19 @@ function registerRoutes(app, io) {
           fs.rmSync(dir, { recursive: true, force: true });
           return res.status(403).json({ ok: false, error: '你不在该房间中，无法发送' });
         }
+        // 禁言 / 限流：拒绝并清理合并产物
+        const denied = checkAllowed(clientId);
+        if (denied) {
+          fs.rmSync(finalPath, { force: true });
+          fs.rmSync(dir, { recursive: true, force: true });
+          return res.status(403).json({ ok: false, error: denied });
+        }
+
+        // 记录元数据 + 进入聊天消息流程
+        saveMeta(storedName, originalName, actualSize, relPath);
         const downloadUrl = `/download/${encodeURIComponent(storedName)}`;
-        const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size: actualSize, downloadUrl, timestamp: Date.now() };
+        const caption = String((req.body && req.body.text) || '').trim().slice(0, 5000);
+        const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size: actualSize, downloadUrl, timestamp: Date.now(), ...(caption ? { text: caption, mentions: parseMentions(caption) } : {}) };
 
         const mime = detectImageMime(storedName, finalPath);
         if (mime) {

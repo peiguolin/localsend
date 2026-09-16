@@ -1,19 +1,60 @@
-/* 上传分片：分片上传（断点续传）/ 粘贴截图即发 / 拖拽上传。
- * 双通道加载：Node（冒烟测试）由 client.js require；浏览器由 <script> 在 client.js 之后加载。
- * 跨模块依赖：壳的 setHint；DOM 读取 rooms 的 groupModal（仅判断弹窗是否打开，避免误发）。 */
+/* 上传分片：选图/文件 → 预览托盘（可配文字、可取消）→ 发送时分片上传（断点续传）。
+ * 也支持粘贴截图、拖拽入托盘。双通道加载：Node 由 client.js require；浏览器 <script> 加载。
+ * 跨模块依赖：壳的 setHint；chat 分片发送时经 app.sendAttachment(text) 取走托盘文件并附带配文。 */
 (function () {
   'use strict';
 
   const app = window.chatApp;
   const state = app.state;
+  const { fmtSize, escapeHtml } = app.utils;
 
   // ---------- DOM 引用 ----------
   const fileInput = document.getElementById('fileInput');
   const chatArea = document.getElementById('chatArea');
   const groupModal = document.getElementById('groupModal');
+  const tray = document.getElementById('attachTray');
 
-  // ---------- 文件上传（分片 + 断点续传） ----------
-  // 上传中断/刷新后重新选择同一文件：init 返回已收分片，自动跳过续传
+  // ---------- 待发附件（MVP：单个；后续多图把它改成数组即可） ----------
+  let pendingFile = null;
+  let pendingUrl = null;
+  let sending = false;
+
+  function hasPendingAttachment() { return !!pendingFile; }
+
+  function clearAttachment() {
+    pendingFile = null;
+    if (pendingUrl) { try { URL.revokeObjectURL(pendingUrl); } catch (_) {} pendingUrl = null; }
+    tray.hidden = true;
+    tray.innerHTML = '';
+  }
+
+  // 把文件放进托盘（图片显示缩略图，其它文件显示文件名/大小），不立即上传
+  function queueFile(file) {
+    if (!file) return;
+    if (file.size > 200 * 1024 * 1024) { app.setHint('文件超过 200MB 大小限制', 'error'); return; }
+    if (file.size <= 0) { app.setHint('空文件无法发送', 'error'); return; }
+    clearAttachment();
+    pendingFile = file;
+    const isImg = (file.type || '').indexOf('image/') === 0;
+    if (isImg) pendingUrl = URL.createObjectURL(file);
+    tray.innerHTML = `
+      <div class="attach-item">
+        ${isImg
+          ? `<img class="attach-thumb" src="${pendingUrl}" alt="">`
+          : `<span class="attach-fileicon">📄</span>`}
+        <div class="attach-meta">
+          <span class="attach-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+          <span class="attach-size">${fmtSize(file.size)}</span>
+        </div>
+        <button class="attach-x" type="button" title="取消附件">×</button>
+      </div>`;
+    tray.hidden = false;
+    tray.querySelector('.attach-x').addEventListener('click', clearAttachment);
+    const input = document.getElementById('msgInput');
+    if (input) input.focus();
+  }
+
+  // ---------- 分片上传（断点续传），caption 为可选文字说明 ----------
   function postJson(url, data) {
     return fetch(url, {
       method: 'POST',
@@ -22,16 +63,8 @@
     }).then((r) => r.json().catch(() => ({ ok: false, error: '响应解析失败' })));
   }
 
-  async function uploadFile(file) {
-    if (!file) return;
-    if (file.size > 200 * 1024 * 1024) {
-      app.setHint('文件超过 200MB 大小限制', 'error');
-      return;
-    }
-    if (file.size <= 0) {
-      app.setHint('空文件无法上传', 'error');
-      return;
-    }
+  async function uploadFile(file, caption) {
+    if (!file) return { ok: false };
     app.setHint(`正在上传 ${file.name} … 准备中`);
     try {
       // 1) 初始化（同一文件会返回已收分片 → 续传）
@@ -42,7 +75,7 @@
       });
       if (!init || !init.ok) {
         app.setHint((init && init.error) || '初始化上传失败', 'error');
-        return;
+        return init || { ok: false };
       }
       const { uploadId, chunkSize, totalChunks, received } = init;
       const sentSet = new Set(received || []);
@@ -61,13 +94,13 @@
         const res = await fetch('/upload/chunk', { method: 'POST', body: fd }).catch(() => null);
         if (!res || !res.ok) {
           app.setHint(`上传中断（第 ${i + 1}/${totalChunks} 片）。重新选择同一文件可断点续传`, 'error');
-          return;
+          return { ok: false };
         }
         const done = already + (i - sentSet.size + 1);
         app.setHint(`正在上传 ${file.name} … ${Math.round((done / totalChunks) * 100)}%`);
       }
 
-      // 3) 合并 + 进聊天
+      // 3) 合并 + 进聊天（带文字说明 caption）
       const fd2 = new FormData();
       fd2.append('uploadId', uploadId);
       fd2.append('originalName', encodeURIComponent(file.name));
@@ -76,33 +109,46 @@
       fd2.append('nickname', state.myNickname);
       fd2.append('clientId', state.myClientId);
       fd2.append('room', state.currentRoom);
+      if (caption) fd2.append('text', caption);
       const comp = await fetch('/upload/complete', { method: 'POST', body: fd2 })
         .then((r) => r.json().catch(() => null)).catch(() => null);
       if (!comp || !comp.ok) {
         app.setHint((comp && comp.error) || '合并文件失败', 'error');
-        return;
+        return comp || { ok: false };
       }
       app.setHint(`已发送文件 ${file.name}`, 'success');
+      return comp;
     } catch (e) {
       app.setHint(`上传失败：${e.message || '未知错误'}`, 'error');
+      return { ok: false, error: e.message };
     }
   }
 
-  // 点击选择文件
+  // 供 chat 分片发送时调用：上传当前托盘附件（带配文），成功后清空托盘
+  async function sendAttachment(caption) {
+    if (!pendingFile || sending) return { ok: false };
+    sending = true;
+    try {
+      const file = pendingFile;
+      const res = await uploadFile(file, String(caption || '').trim());
+      if (res && res.ok) clearAttachment();
+      return res;
+    } finally {
+      sending = false;
+    }
+  }
+
+  // 点击选择文件 → 入托盘（不再立即发送）
   document.querySelector('.file-btn').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     if (fileInput.files.length) {
-      uploadFile(fileInput.files[0]);
+      queueFile(fileInput.files[0]);
       fileInput.value = '';
     }
   });
 
-  // ---------- 粘贴截图即发送（方案 A：桌面端） ----------
-  // 剪贴板含图片时接管并直接发送；纯文本粘贴不受影响（不 preventDefault）；
-  // 群聊弹窗打开时不接管，避免误发。
-  // 注意：Linux（Wayland / 部分截图工具）下 paste 事件的 clipboardData.items
-  // 常常读不到图片项（Chromium 的 Linux 剪贴板映射问题，微信等原生应用不受影响），
-  // 因此兜底用 navigator.clipboard.read() 直接读剪贴板图片（HTTPS 可用，首次请求授权）。
+  // ---------- 粘贴截图：入托盘（纯文本粘贴不拦截；群聊弹窗打开时不接管） ----------
+  // Linux（Wayland / 部分截图工具）paste 事件常读不到图片项，兜底用 navigator.clipboard.read()。
   function pastedImageName(type) {
     const pad2 = (n) => String(n).padStart(2, '0');
     const d = new Date();
@@ -118,7 +164,7 @@
         const imgType = (item.types || []).find((t) => t.indexOf('image/') === 0);
         if (imgType) return await item.getType(imgType);
       }
-    } catch (_) { /* 无权限/被拒绝/不支持：返回 null 走诊断 */ }
+    } catch (_) { /* 无权限/被拒绝/不支持：返回 null */ }
     return null;
   }
   document.addEventListener('paste', (e) => {
@@ -131,31 +177,30 @@
           e.preventDefault();
           const blob = item.getAsFile && item.getAsFile();
           if (blob) {
-            uploadFile(new File([blob], pastedImageName(item.type), { type: item.type, lastModified: Date.now() }));
+            queueFile(new File([blob], pastedImageName(item.type), { type: item.type, lastModified: Date.now() }));
             return;
           }
         }
       }
     }
-    // 兜底：items 里没读到图片（Linux 常见）→ 用 Clipboard API 异步重读
+    // 兜底：items 没读到图片（Linux 常见）→ Clipboard API 异步重读
     readClipboardImageFallback().then((blob) => {
       if (blob) {
-        uploadFile(new File([blob], pastedImageName(blob.type), { type: blob.type, lastModified: Date.now() }));
+        queueFile(new File([blob], pastedImageName(blob.type), { type: blob.type, lastModified: Date.now() }));
         return;
       }
-      // 诊断：剪贴板确实有文件类内容但都读不到图片，提示用户（帮助排查 Linux 剪贴板问题）
       if (items) {
         const fileItems = Array.from(items).filter((it) => it.kind === 'file');
         if (fileItems.length) {
           const types = fileItems.map((it) => it.type || '(无类型)').join(' / ');
           console.warn('[粘贴] 剪贴板有文件但未识别为图片:', types);
-          app.setHint('剪贴板内容浏览器无法读取为图片，可试试：菜单-设置-检查剪贴板权限，或用「+」选择图片', 'error');
+          app.setHint('剪贴板内容浏览器无法读取为图片，可试试用「文件」选择图片', 'error');
         }
       }
     });
   });
 
-  // 拖拽上传（拖到聊天区）
+  // 拖拽：拖到聊天区高亮，松手入托盘
   ['dragenter', 'dragover'].forEach((evt) => {
     chatArea.addEventListener(evt, (e) => {
       e.preventDefault();
@@ -170,8 +215,13 @@
   });
   chatArea.addEventListener('drop', (e) => {
     const files = e.dataTransfer && e.dataTransfer.files;
-    if (files && files.length) {
-      uploadFile(files[0]);
-    }
+    if (files && files.length) queueFile(files[0]);
+  });
+
+  // 暴露给 chat 分片（发送）与 rooms 分片（切房时清托盘，防发错房间）
+  Object.assign(app, {
+    hasPendingAttachment,
+    sendAttachment,
+    clearAttachment
   });
 })();

@@ -134,6 +134,7 @@
     chatArea.innerHTML = '';
     state.msgStore.clear();
     app.initHistoryState(); // 重置历史分页状态，防串房
+    if (app.clearAttachment) app.clearAttachment(); // 切房清掉待发附件，防发错房间
     // 更新房间列表 active
     document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
     if (mobileRoomList) {

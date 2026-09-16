@@ -3291,3 +3291,65 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
 .audit-actor { font-weight: 600; color: var(--text-secondary); }
 .audit-action { color: var(--text); }
 .audit-detail { color: var(--text-faint); font-size: 11.5px; width: 100%; }
+
+/* ===== 待发附件预览托盘 ===== */
+.attach-tray {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attach-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.attach-thumb {
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.attach-fileicon {
+  width: 46px; height: 46px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.attach-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 2px; }
+.attach-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-size { font-size: 11.5px; color: var(--text-faint); }
+
+.attach-x {
+  width: 24px; height: 24px;
+  border: none; border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 16px; line-height: 1;
+  cursor: pointer; flex-shrink: 0;
+}
+.attach-x:hover { background: var(--danger); color: #fff; }
+
+/* 图片/文件消息下方的文字说明 */
+.msg-caption {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 320px;
+}

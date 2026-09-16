@@ -6,7 +6,8 @@ const { hasControlChars, isLocalSocket, broadcastMembers } = require('./util');
 const { decorateHistory, deleteStoredFile } = require('./filemeta');
 const lifecycle = require('./lifecycle');
 const { myShareOf, broadcastShares } = require('./rt-share');
-const { RECALL_WINDOW, currentConfig } = require('./config');
+const { RECALL_WINDOW } = require('./config');
+const { checkAllowed } = require('./moderation');
 
 const { onlineUsers, groupRooms, wbStrokes } = state;
 
@@ -20,41 +21,11 @@ function register(ioRef, socket) {
     const text = String((data && data.text) || '').trim();
     if (!text || text.length > 5000) return;
     const room = String((data && data.room) || 'main');
-    // 禁言校验：该 clientId 在禁言中 → 拒绝发言（仅提示本人，不入库/广播）
-    const muteUntil = state.mutes.get(socket.data.clientId) || 0;
-    if (muteUntil > Date.now()) {
-      socket.emit('system_message', { room, text: `你已被禁言，至 ${new Date(muteUntil).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 后可发言` });
+    // 禁言 / 限流统一判定（与 HTTP 上传链路共用 src/moderation.js）
+    const denied = checkAllowed(socket.data.clientId);
+    if (denied) {
+      socket.emit('system_message', { room, text: denied });
       return;
-    } else if (muteUntil) {
-      state.mutes.delete(socket.data.clientId); // 过期清理
-    }
-    // 发言限流：窗口内超量拒绝；连续超量自动短禁言（0=不限）
-    const cid = String(socket.data.clientId || '');
-    if (cid) {
-      const rlCfg = currentConfig();
-      const rlLimit = rlCfg.msgRateLimit || 0;
-      const rlWin = (rlCfg.msgRateWindowSec || 10) * 1000;
-      if (rlLimit > 0) {
-        const now = Date.now();
-        const rec = state.rateHits.get(cid) || { times: [], strikes: 0, lastStrikeAt: 0 };
-        rec.times = rec.times.filter((t) => now - t < rlWin);
-        if (rec.times.length >= rlLimit) {
-          rec.strikes++;
-          rec.lastStrikeAt = now;
-          if (rec.strikes >= 3) {
-            state.mutes.set(cid, now + 60000); // 连续刷屏 → 自动禁言 1 分钟（与用户管理同源）
-            socket.emit('system_message', { room, text: '发言过于频繁，已临时禁言 1 分钟' });
-            rec.strikes = 0;
-          } else {
-            socket.emit('system_message', { room, text: '发送太频繁，请稍后再发' });
-          }
-          state.rateHits.set(cid, rec);
-          return;
-        }
-        rec.times.push(now);
-        if (now - rec.lastStrikeAt > rlWin) rec.strikes = 0; // 长时间未刷屏 → 衰减
-        state.rateHits.set(cid, rec);
-      }
     }
     // 群聊房需校验成员身份；main 公共房所有人可发
     if (room !== 'main') {

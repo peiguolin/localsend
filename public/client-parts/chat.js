@@ -186,6 +186,12 @@
     insertMsgNode(div);
   }
 
+  // 图片/文件的文字说明（caption）：复用消息内容渲染（@高亮/代码），渲染成单独的小气泡
+  function captionHTML(data) {
+    if (!data || !data.text) return '';
+    return `<div class="msg-caption">${renderContentHTML(data.text, data)}</div>`;
+  }
+
   function renderFileMsg(data) {
     const isSelf = isOwnMessage(data);
     const div = document.createElement('div');
@@ -211,7 +217,9 @@
           <a class="download-btn" href="${escapeHtml(data.downloadUrl)}" download>下载</a>
         </div>
       </div>
+      ${captionHTML(data)}
     `;
+    applyCodeHighlight(div);
     insertMsgNode(div);
   }
 
@@ -228,6 +236,7 @@
       <div class="msg-bubble image-bubble">
         <img class="msg-image" src="${escapeHtml(data.imageUrl)}" alt="${escapeHtml(data.fileName)}" title="${escapeHtml(data.fileName)}" loading="lazy">
       </div>
+      ${captionHTML(data)}
     `;
     const img = div.querySelector('.msg-image');
     img.addEventListener('click', () => openLightbox(data));
@@ -238,6 +247,7 @@
         <a class="download-btn" href="${escapeHtml(data.downloadUrl)}" download>下载原图</a>
       `;
     });
+    applyCodeHighlight(div);
     insertMsgNode(div);
   }
 
@@ -357,6 +367,17 @@
   function sendMessage() {
     app.closeEmojiPanel();
     const text = msgInput.value.trim();
+    // 托盘有附件 → 走上传通道（文字作为配文，可空），由服务端回 chat_message 渲染
+    if (app.hasPendingAttachment && app.hasPendingAttachment()) {
+      app.sendAttachment(text);
+      msgInput.value = '';
+      clearQuote();
+      app.closeAutocomplete();
+      msgInput.focus();
+      app.scrollToBottom(true);
+      app.resetPill();
+      return;
+    }
     if (!text) return;
     socket.emit('chat_message', { text, quoteId: state.quoting ? state.quoting.id : undefined, clientId: state.myClientId, room: state.currentRoom });
     msgInput.value = '';
