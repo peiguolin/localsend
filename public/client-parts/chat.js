@@ -303,6 +303,56 @@
     app.handleIncomingMessage(data);
   });
 
+  // ---------- 机器人流式回复（打字机）----------
+  // tempId -> { bubble, full }；bot_start 建临时气泡，bot_delta 追加，
+  // bot_done 移除临时气泡（紧接着正式 chat_message 渲染最终版），bot_error 显示错误
+  const botStreams = new Map();
+
+  socket.on('bot_start', (data) => {
+    if (!data || (data.room || 'main') !== state.currentRoom) return;
+    if (botStreams.has(data.tempId)) return;
+    const div = document.createElement('div');
+    div.className = 'msg other bot streaming';
+    div.innerHTML = `
+      <div class="msg-header">
+        <span class="msg-bot-badge">🤖</span>
+        <span class="msg-nick">${escapeHtml(data.nickname || '机器人')}</span>
+      </div>
+      <div class="msg-bubble"></div>
+    `;
+    const bubble = div.querySelector('.msg-bubble');
+    bubble.textContent = '';
+    app.appendMsg(div);
+    botStreams.set(data.tempId, { div, bubble, full: '' });
+    app.scrollToBottom(false);
+  });
+
+  socket.on('bot_delta', (data) => {
+    const s = botStreams.get(data && data.tempId);
+    if (!s) return;
+    s.full = typeof data.full === 'string' ? data.full : (s.full + (data.piece || ''));
+    s.bubble.textContent = s.full;
+    // 用户停在底部附近时跟随滚动，翻看历史时不打断
+    if (app.isNearBottom()) chatArea.scrollTop = chatArea.scrollHeight;
+  });
+
+  socket.on('bot_done', (data) => {
+    const s = botStreams.get(data && data.tempId);
+    if (s) { s.div.remove(); botStreams.delete(data.tempId); }
+    // 正式 chat_message 紧随其后到达，走常规渲染（入库态、高亮、引用等）
+  });
+
+  socket.on('bot_error', (data) => {
+    const s = botStreams.get(data && data.tempId);
+    if (s) {
+      s.div.classList.remove('streaming');
+      s.bubble.textContent = `🤖 ${(data && data.error) || '生成失败'}`;
+      s.bubble.classList.add('bot-error');
+      botStreams.delete(data.tempId);
+      setTimeout(() => s.div.remove(), 6000);
+    }
+  });
+
   // ---------- 发送聊天消息 ----------
   function sendMessage() {
     app.closeEmojiPanel();

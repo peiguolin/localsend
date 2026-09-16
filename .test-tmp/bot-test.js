@@ -22,6 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- 假 OpenAI 兼容 LLM 端点 ----------
 let llmReq = null;
+function sse(data) { return `data: ${JSON.stringify(data)}\n\n`; }
 function startLLM() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
@@ -29,6 +30,16 @@ function startLLM() {
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
         llmReq = { url: req.url, method: req.method, auth: req.headers.authorization || '', body: JSON.parse(body || '{}') };
+        if (llmReq.body.stream) {
+          // 流式：逐块 SSE，再发 [DONE]
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.write(sse({ choices: [{ delta: { role: 'assistant' } }] }));
+          res.write(sse({ choices: [{ delta: { content: '我是机器人' } }] }));
+          res.write(sse({ choices: [{ delta: { content: '，收到。' } }] }));
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '我是机器人，收到。' } }] }));
       });
@@ -115,7 +126,11 @@ async function main() {
     await waitBotMember(B.s);
     check('成员列表含机器人（@自动补全数据源）', true);
 
-    // 触发：@机器人
+    // 触发：@机器人（同时收集流式事件）
+    const stream = { start: null, deltas: [], done: null };
+    B.s.on('bot_start', (d) => { stream.start = d; });
+    B.s.on('bot_delta', (d) => { stream.deltas.push(d); });
+    B.s.on('bot_done', (d) => { stream.done = d; });
     const replyP = waitBotReply(B.s);
     B.s.emit('chat_message', { text: '你好 @机器人', room: 'main', clientId: 'cB' });
     const reply = await replyP;
@@ -124,8 +139,17 @@ async function main() {
     check('回复带 room', reply.room === 'main');
     check('机器人消息 clientId 以 bot: 开头', String(reply.clientId).indexOf('bot:') === 0);
 
+    // 流式事件
+    check('收到 bot_start（临时气泡）', stream.start && stream.start.tempId && stream.start.nickname === '机器人');
+    check('收到 2 个 bot_delta 且拼接正确',
+      stream.deltas.length === 2 &&
+      stream.deltas.map((d) => d.piece).join('') === '我是机器人，收到。' &&
+      stream.deltas[stream.deltas.length - 1].full === '我是机器人，收到。');
+    check('收到 bot_done 且带正式消息 id', stream.done && stream.done.tempId === stream.start.tempId && !!stream.done.id);
+
     // 假 LLM 收到的请求体
     check('调用 /v1/chat/completions', llmReq && llmReq.url === '/v1/chat/completions' && llmReq.method === 'POST');
+    check('请求带 stream:true（流式）', llmReq.body.stream === true);
     check('Authorization Bearer 透传', llmReq.auth === 'Bearer test-secret');
     check('model 透传', llmReq.body.model === 'test-model');
     check('messages 首条为 system', llmReq.body.messages[0].role === 'system');

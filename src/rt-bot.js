@@ -48,14 +48,13 @@ function buildContext(room, socketId, curText, n) {
   }));
 }
 
-// 调 OpenAI 兼容接口；返回纯文本
-async function callLLM(cfg, prompt, context, userText) {
+// 构造请求参数（流式开关由调用方传）
+function buildRequest(cfg, prompt, context, userText, stream) {
   const base = String(cfg.botBaseUrl || '').replace(/\/+$/, '');
   if (!base) throw new Error('未配置接口地址');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.botTimeoutMs || 60000);
-  try {
-    const r = await fetch(`${base}/v1/chat/completions`, {
+  return {
+    url: `${base}/v1/chat/completions`,
+    options: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -63,19 +62,73 @@ async function callLLM(cfg, prompt, context, userText) {
       },
       body: JSON.stringify({
         model: cfg.botModel || undefined,
+        stream: !!stream,
         messages: [
           { role: 'system', content: prompt || `你是「${cfg.botName}」，局域网聊天室里的 AI 助手。用与用户一致的语言简洁回答。` },
           ...context,
           { role: 'user', content: userText }
         ]
-      }),
-      signal: controller.signal
-    });
-    const j = await r.json().catch(() => null);
-    if (!r.ok) throw new Error(`HTTP ${r.status}${j && j.error ? ': ' + ((j.error.message) || j.error) : ''}`);
-    const content = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-    if (typeof content !== 'string' || !content.trim()) throw new Error('接口返回为空');
-    return content.trim();
+      })
+    }
+  };
+}
+
+function httpError(r, j) {
+  return new Error(`HTTP ${r.status}${j && j.error ? ': ' + ((j.error.message) || j.error) : ''}`);
+}
+
+// 流式调用：解析 OpenAI 兼容 SSE，每个增量回调 onDelta(piece, full)；返回完整文本。
+// 端点若不支持流式（返回普通 JSON），自动退化为一次性返回。
+async function streamLLM(cfg, prompt, context, userText, onDelta) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.botTimeoutMs || 60000);
+  try {
+    const { url, options } = buildRequest(cfg, prompt, context, userText, true);
+    const r = await fetch(url, { ...options, signal: controller.signal });
+    const ct = r.headers.get('content-type') || '';
+    if (!r.ok) {
+      const j = await r.json().catch(() => null);
+      throw httpError(r, j);
+    }
+    // 非 SSE 响应（对端忽略了 stream 参数）→ 普通 JSON 退化
+    if (!ct.includes('text/event-stream')) {
+      const j = await r.json().catch(() => null);
+      const content = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      if (typeof content !== 'string' || !content.trim()) throw new Error('接口返回为空');
+      const text = content.trim();
+      onDelta(text, text);
+      return text;
+    }
+    // 解析 SSE：逐行 data: {...}，[DONE] 结束
+    let buf = '';
+    let full = '';
+    const handleLine = (line) => {
+      line = line.trim();
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+      let o;
+      try { o = JSON.parse(payload); } catch (_) { return; }
+      const piece = (o.choices && o.choices[0] && (
+        (o.choices[0].delta && o.choices[0].delta.content) ||
+        (o.choices[0].message && o.choices[0].message.content)
+      )) || '';
+      if (piece) {
+        full += piece;
+        onDelta(piece, full);
+      }
+    };
+    for await (const chunk of r.body) {
+      buf += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        handleLine(buf.slice(0, idx));
+        buf = buf.slice(idx + 1);
+      }
+    }
+    if (buf.trim()) handleLine(buf);
+    if (!full.trim()) throw new Error('接口返回为空');
+    return full.trim();
   } finally {
     clearTimeout(timer);
   }
@@ -100,10 +153,16 @@ function register(io, socket) {
     const prompt = ov.prompt || cfg.botPrompt; // 本房间自定义提示词优先
 
     (async () => {
+      // 流式回复的临时气泡 id：bot_start/bot_delta/bot_error 用它定位同一条气泡；
+      // 最终以正式 chat_message（含持久化 id）为准，迟到加入者/历史仍只看正式消息
+      const tempId = nextMsgId();
+      const startedAt = Date.now();
+      io.to(room).emit('bot_start', { tempId, room, nickname: botName });
       try {
-        io.to(room).emit('system_message', { room, text: `🤖 ${botName} 正在思考…` });
         const context = buildContext(room, socket.id, text, cfg.botContextN);
-        const reply = await callLLM(cfg, prompt, context, text);
+        const reply = await streamLLM(cfg, prompt, context, text, (piece, full) => {
+          io.to(room).emit('bot_delta', { tempId, room, piece, full });
+        });
         const msg = {
           id: nextMsgId(),
           type: 'text',
@@ -113,15 +172,16 @@ function register(io, socket) {
           nickname: botName,
           text: reply,
           mentions: [],
-          timestamp: Date.now(),
+          timestamp: startedAt,
           isBot: true
         };
         chatLogPush(msg);
         store.insertMessage(msg);
         store.trimMessages(room);
+        io.to(room).emit('bot_done', { tempId, room, id: msg.id });
         io.to(room).emit('chat_message', msg);
       } catch (e) {
-        io.to(room).emit('system_message', { room, text: `🤖 ${botName} 出错了：${e.message || '未知错误'}` });
+        io.to(room).emit('bot_error', { tempId, room, error: e.message || '未知错误' });
       } finally {
         generating.delete(room);
       }
