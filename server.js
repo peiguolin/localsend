@@ -28,6 +28,7 @@ const rtTranslate = require('./src/rt-translate');
 const rtConfig = require('./src/rt-config');
 const rtBot = require('./src/rt-bot');
 const rtAdmin = require('./src/rt-admin');
+const rtPin = require('./src/rt-pin');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -76,10 +77,46 @@ io.on('connection', (socket) => {
     }
   }
 
+  // 扫码/链接加入：握手带 inviteToken，命中群聊房则自动成为成员（持久化）+ 入房
+  const joinToken = String((socket.handshake.auth && socket.handshake.auth.joinToken) || '');
+  if (joinToken) {
+    let target = null;
+    for (const room of state.groupRooms.values()) {
+      if (room.inviteToken === joinToken) { target = room; break; }
+    }
+    if (target) {
+      if (clientId && !target.members.some((m) => m.clientId === clientId)) {
+        target.members.push({ clientId, nickname: socket.data.nickname });
+        store.updateRoom(target);
+        if (!state.clientRooms.has(clientId)) state.clientRooms.set(clientId, new Set());
+        state.clientRooms.get(clientId).add(target.id);
+      }
+      socket.join(target.id);
+      if (!target.online) target.online = new Set();
+      target.online.add(socket.id);
+      if (!myRooms.some((r) => r.id === target.id)) myRooms.push(rtRooms.publicRoomInfo(target));
+      io.to(target.id).emit('system_message', {
+        type: 'group', room: target.id, nickname: socket.data.nickname,
+        text: `${socket.data.nickname} 通过邀请链接加入了群聊「${target.name}」`,
+        timestamp: Date.now()
+      });
+    }
+  }
+
   // 通知本人（id 用于 WebRTC 通话信令定位）；附带最近历史消息 + 我加入的群聊房
   let history = [];
-  try { history = decorateHistory(store.loadMessages(200, 'main')); } catch (_) { /* 历史不可用 */ }
-  socket.emit('welcome', { id: socket.id, nickname: socket.data.nickname, online: state.onlineUsers.size, history, rooms: myRooms, isLocal: isLocalSocket(socket) });
+  let announcement = null;
+  let pins = [];
+  try {
+    history = decorateHistory(store.loadMessages(200, 'main'));
+    announcement = store.getAnnouncement('main');
+    pins = rtPin.loadRoomPins('main');
+  } catch (_) { /* 历史不可用 */ }
+  socket.emit('welcome', {
+    id: socket.id, nickname: socket.data.nickname, online: state.onlineUsers.size,
+    history, rooms: myRooms, isLocal: isLocalSocket(socket),
+    announcement, pins
+  });
   // 推送当前共享列表与屏幕共享状态
   socket.emit('shares_update', Array.from(state.shares.values()).map(rtShare.publicShareInfo));
   socket.emit('ss_state', rtScreenshare.ssState());
@@ -97,6 +134,7 @@ io.on('connection', (socket) => {
   rtChat.register(io, socket);
   rtBot.register(io, socket); // 需在 rtChat 之后：机器人触发依赖消息已入库/入流水
   rtRooms.register(io, socket);
+  rtPin.register(io, socket);
   rtCall.register(io, socket);
   rtWhiteboard.register(io, socket);
   rtScreenshare.register(io, socket);
@@ -134,8 +172,8 @@ try {
 const lifecycle = require('./src/lifecycle');
 lifecycle.startScheduler();
 
-// 日历日程提醒：到点向对应房间推送系统消息（需 DB 就绪）
-rtCalendar.startReminder(io);
+// 日历日程提醒：到点向对应房间推送系统消息（需 DB 就绪；timer 供优雅退出时清除）
+const reminderTimer = rtCalendar.startReminder(io);
 {
   const rc = lifecycle.retentionConfig();
   console.log(`  生命周期:   文件保留 ${rc.fileTtlDays > 0 ? rc.fileTtlDays + ' 天' : '不限'} · 容量上限 ${rc.maxUploadMB > 0 ? rc.maxUploadMB + 'MB' : '不限'} · 消息保留 ${rc.msgTtlDays > 0 ? rc.msgTtlDays + ' 天' : '永久'} · 每 ${rc.sweepIntervalMin} 分钟清扫`);
@@ -175,3 +213,49 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('==========================================');
 });
 });
+
+// ---------- 优雅退出（SIGINT/SIGTERM）：停止定时器、通知客户端、清理共享传输与 .tmp、关 SQLite ----------
+const { TMP_DIR } = require('./src/config');
+const fs = require('fs');
+
+function shutdown(signal) {
+  console.log(`\n  收到 ${signal}，正在优雅退出…`);
+  try { lifecycle.stopScheduler(); } catch (_) { /* 忽略 */ }
+  if (reminderTimer) { try { clearInterval(reminderTimer); } catch (_) { /* 忽略 */ } }
+
+  // 告知在线客户端正在关闭（页面提示而非"已断开"）
+  try { io.emit('system_message', { text: '服务器正在关闭，请稍后重试' }); } catch (_) { /* 忽略 */ }
+
+  // 清理挂起的文件夹共享传输（共享者/下载者/上传者请求直接结束）
+  for (const [, t] of state.pendingTransfers) {
+    try {
+      clearTimeout(t.timer);
+      if (t.res && !t.res.headersSent) t.res.status(503).json({ ok: false, error: '服务器正在关闭' });
+      else if (t.res) t.res.destroy();
+      if (t.req && !t.req.readableEnded) t.req.destroy();
+    } catch (_) { /* 忽略 */ }
+  }
+  try { state.pendingTransfers.clear(); } catch (_) { /* 忽略 */ }
+
+  // 清理断点续传暂存区（下次启动本就会清，这里提前收尾）
+  try { fs.rmSync(TMP_DIR, { recursive: true, force: true }); } catch (_) { /* 忽略 */ }
+
+  // 停止接收新连接；存量请求结束后关库退出。限时 5s 兜底强制退出
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    try { store.close(); } catch (_) { /* 忽略 */ }
+    process.exit(0);
+  };
+  try {
+    server.close(finish);
+    // 有长连接（WebSocket/大文件传输）时 server.close 可能等不到，兜底强制
+    setTimeout(finish, 5000).unref();
+  } catch (_) {
+    finish();
+  }
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

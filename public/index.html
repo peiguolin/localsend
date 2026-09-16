@@ -63,9 +63,13 @@
         <div class="room-titlebar">
           <span class="rt-name">公共房</span>
           <span class="rt-hint" id="roomTitleHint">所有人都在这里聊天</span>
+          <button class="rt-share" id="roomShareBtn" type="button" title="分享本房间：二维码 / 链接">🔗 分享</button>
+          <button class="rt-ann" id="roomAnnounceBtn" type="button" hidden title="设置本房间公告">📢 公告</button>
           <button class="rt-clear" id="roomClearBtn" type="button" hidden>清空记录</button>
           <button class="rt-bot" id="roomBotBtn" type="button" hidden title="本房间的机器人设置">🤖 机器人</button>
         </div>
+        <div class="ann-bar" id="annBar" hidden></div>
+        <div class="pin-strip" id="pinStrip" hidden></div>
         <div class="chat-area" id="chatArea">
           <!-- 消息将动态渲染到这里 -->
         </div>
@@ -119,6 +123,7 @@
           <button class="share-primary-btn" id="createShareBtn" type="button">+ 共享我的文件夹</button>
         </div>
         <div class="my-share-box" id="myShareBox" hidden></div>
+        <div class="restore-share-box" id="restoreShareBox" hidden></div>
         <ul class="share-list" id="shareList"></ul>
         <div class="share-empty" id="shareEmpty" hidden>
           还没有人共享文件夹<br>
@@ -496,6 +501,36 @@
     </div>
   </div>
 
+  <!-- 房间分享：二维码 + 邀请链接 -->
+  <div class="modal" id="shareRoomModal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-title">🔗 分享「<span id="srRoomName"></span>」</div>
+      <div class="sr-qr" id="srQr"></div>
+      <input class="modal-input" id="srLink" readonly>
+      <div class="modal-tip" id="srTip">手机扫一扫二维码即可加入本房间；也可复制链接发给别人</div>
+      <div class="modal-btns">
+        <button class="tool-btn" id="srReset" type="button" hidden title="重置后旧链接失效">重置邀请链接</button>
+        <button class="share-primary-btn" id="srCopy" type="button">复制链接</button>
+        <button class="tool-btn" id="srClose" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 群公告编辑 -->
+  <div class="modal" id="annModal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-title">📢 群公告</div>
+      <textarea class="modal-input bot-cfg-prompt" id="annText" rows="3" maxlength="500" placeholder="输入本房间公告内容（留空则清除公告）"></textarea>
+      <div class="modal-tip" id="annTip">公告会显示在聊天区顶部，全员可见；仅房主或宿主机可修改</div>
+      <div class="modal-btns">
+        <button class="tool-btn" id="annCancel" type="button">取消</button>
+        <button class="share-primary-btn" id="annSave" type="button">发布公告</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 移动端：抽屉遮罩（fixed，置于 body 末尾） -->
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
@@ -503,8 +538,10 @@
   <script src="vendor/highlight.min.js"></script>
   <script src="vendor/lunar.js"></script>
   <script src="vendor/emoji-data.js"></script>
+  <script src="vendor/qrcode.js"></script>
   <script src="client-parts/util.js"></script>
   <script src="client-parts/state.js"></script>
+  <script src="client-parts/share-store.js"></script>
   <script src="client.js"></script>
   <script src="client-parts/call.js"></script>
   <script src="client-parts/chat.js"></script>

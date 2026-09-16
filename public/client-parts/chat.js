@@ -165,6 +165,34 @@
     return data && data.nickname === state.myNickname;
   }
 
+  // ---------- 置顶标记（state.pins: room -> [{msgId, msg, ...}]，见 state.js） ----------
+  function isPinnedMsg(id) {
+    const pins = state.pins && state.pins.get(state.currentRoom);
+    return !!(id && pins && pins.some((p) => p.msgId === id));
+  }
+  function pinBadgeHTML(data) {
+    return isPinnedMsg(data && data.id) ? '<span class="msg-pin-badge" title="已置顶">📌</span>' : '';
+  }
+  // 给已渲染的消息 DOM 加/去置顶角标（进房渲染置顶条时批量调用）
+  function markMessagePinned(mid, on) {
+    if (!mid) return;
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!el) return;
+    const header = el.querySelector('.msg-header');
+    if (!header) return;
+    if (on) {
+      if (header.querySelector('.msg-pin-badge')) return;
+      const b = document.createElement('span');
+      b.className = 'msg-pin-badge';
+      b.title = '已置顶';
+      b.textContent = '📌';
+      header.insertBefore(b, header.firstChild);
+    } else {
+      const b = header.querySelector('.msg-pin-badge');
+      if (b) b.remove();
+    }
+  }
+
   function renderTextMsg(data) {
     const isSelf = isOwnMessage(data);
     const mentionedMe = !isSelf && (data.mentions || []).includes(state.myNickname);
@@ -174,6 +202,7 @@
     div.innerHTML = `
       <div class="msg-header">
         ${data.isBot ? '<span class="msg-bot-badge">🤖</span>' : ''}
+        ${pinBadgeHTML(data)}
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
         <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>
@@ -199,6 +228,7 @@
     if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
+        ${pinBadgeHTML(data)}
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
         <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>
@@ -230,6 +260,7 @@
     if (data.id) div.dataset.mid = data.id;
     div.innerHTML = `
       <div class="msg-header">
+        ${pinBadgeHTML(data)}
         <span class="msg-nick">${escapeHtml(data.nickname)}</span>
         <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>
@@ -447,6 +478,25 @@
     if (state.longPressFired) { state.longPressFired = false; e.stopPropagation(); }
   }, true);
 
+  // 当前用户能否管理本房间（置顶/公告）：宿主机任意房间；群聊房另加房主本人；main 仅宿主机
+  function canManageRoom() {
+    if (state.isLocalHost) return true;
+    if (state.currentRoom === 'main') return false;
+    const room = state.myRooms.find((r) => r.id === state.currentRoom);
+    return !!(room && room.ownerClientId === state.myClientId);
+  }
+
+  function pinMessage(id) {
+    socket.emit('room_pin_add', { room: state.currentRoom, msgId: id }, (res) => {
+      if (!res || !res.ok) app.setHint((res && res.error) || '置顶失败', 'error');
+    });
+  }
+  function unpinMessage(id) {
+    socket.emit('room_pin_remove', { room: state.currentRoom, msgId: id }, (res) => {
+      if (!res || !res.ok) app.setHint((res && res.error) || '取消置顶失败', 'error');
+    });
+  }
+
   function openCtxMenu(x, y, data) {
     closeCtxMenu();
     const menu = document.createElement('div');
@@ -457,6 +507,10 @@
       if (state.translationAvailable && !mostlyCJK(data.text)) {
         items.push({ label: '翻译成中文', fn: () => translateMessage(data) });
       }
+    }
+    if (canManageRoom()) {
+      const pinned = isPinnedMsg(data.id);
+      items.push({ label: pinned ? '取消置顶' : '置顶消息', fn: () => (pinned ? unpinMessage(data.id) : pinMessage(data.id)) });
     }
     if (isOwnMessage(data) && Date.now() - data.timestamp < 120000) {
       items.push({ label: '撤回', danger: true, fn: () => recallMessage(data.id) });
@@ -606,6 +660,11 @@
     renderImageMsg,
     clearQuote,
     isOwnMessage,
-    initHistoryState
+    initHistoryState,
+    isPinnedMsg,
+    markMessagePinned,
+    canManageRoom,
+    pinMessage,
+    unpinMessage
   });
 })();

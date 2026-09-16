@@ -19,7 +19,10 @@
   const state = app.state;
 
   // 握手带持久 clientId：服务端据此下发我加入的群聊房并自动加入对应 Socket.IO room
-  const socket = io({ auth: { clientId: state.myClientId } });
+  // 握手带 joinToken（来自 ?join= 邀请链接）：服务端命中群聊房则自动成为成员并入房
+  const joinParams = typeof location !== 'undefined' && location.search ? new URLSearchParams(location.search) : null;
+  const joinToken = joinParams ? (joinParams.get('join') || '') : '';
+  const socket = io({ auth: { clientId: state.myClientId, ...(joinToken ? { joinToken } : {}) } });
   // 功能分片在 Node require 期即需取用 socket（浏览器由底部导出设置，此赋值幂等）
   app.socket = socket;
 
@@ -331,6 +334,20 @@
     app.renderRoomList();
     // 初始化历史分页状态（welcome 已带最近历史）
     app.initHistoryState(Array.isArray(data.history) ? data.history : []);
+    // 公共房群公告 + 置顶列表（切房时由 room_history 刷新）
+    if (data.announcement && data.announcement.text) {
+      state.announcement.set('main', { text: data.announcement.text, author: data.announcement.author, updatedAt: data.announcement.updatedAt });
+    } else {
+      state.announcement.delete('main');
+    }
+    state.pins.set('main', Array.isArray(data.pins) ? data.pins : []);
+    if (app.renderAnnouncement) app.renderAnnouncement('main', state.announcement.get('main') || null);
+    if (app.renderPins) app.renderPins('main', state.pins.get('main') || []);
+    if (app.updateRoomTitlebar) app.updateRoomTitlebar();
+    // 通过邀请链接加入成功 → 从地址栏去掉 ?join=，避免每次刷新都重新加入
+    if (joinToken && typeof history !== 'undefined' && history.replaceState) {
+      try { history.replaceState(null, '', location.pathname); } catch (_) { /* ignore */ }
+    }
   });
 
   socket.on('system_message', (data) => {

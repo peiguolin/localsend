@@ -128,6 +128,8 @@ function registerRoutes(app, ioRef) {
   });
 
   // 下载共享文件（共享者浏览器 → 服务器 → 下载者）
+  // 支持 Range 分段（断点续传/分段下载）：Range 头传给共享者，共享者切片推送，
+  // 服务器按切片返回 206 + Content-Range；无 Range 时整文件 200，均带 Accept-Ranges: bytes
   app.get('/api/share/:id/file', (req, res) => {
     const a = authShare(req);
     if (a.error) return res.status(a.status).json({ ok: false, error: a.error, needAuth: !!a.needAuth });
@@ -136,9 +138,24 @@ function registerRoutes(app, ioRef) {
     const owner = io.sockets.sockets.get(a.share.ownerId);
     if (!owner) return res.status(502).json({ ok: false, error: '共享者已离线' });
 
+    // 解析 Range 头（bytes=start-end / bytes=start- / bytes=-suffix；end 由共享者按文件大小裁剪）
+    let range = null;
+    const rh = req.headers.range;
+    if (typeof rh === 'string' && rh.startsWith('bytes=')) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(rh);
+      if (m && (m[1] !== '' || m[2] !== '')) {
+        const s = m[1] === '' ? null : Number(m[1]);
+        const e = m[2] === '' ? null : Number(m[2]);
+        if ((s === null || Number.isInteger(s)) && (e === null || Number.isInteger(e)) &&
+            !(s !== null && e !== null && e < s)) {
+          range = { start: s, end: e };
+        }
+      }
+    }
+
     const transferId = crypto.randomBytes(16).toString('hex');
     const t = {
-      kind: 'push', shareId: a.share.id, res, started: false,
+      kind: 'push', shareId: a.share.id, res, started: false, range,
       timer: setTimeout(() => failTransfer(transferId, 504, '共享者传输超时'), TRANSFER_START_TIMEOUT)
     };
     pendingTransfers.set(transferId, t);
@@ -150,8 +167,17 @@ function registerRoutes(app, ioRef) {
       }
     });
 
-    owner.timeout(OWNER_ACK_TIMEOUT).emit('share_fs', { op: 'read', path: p, transferId }, (err, r) => {
+    owner.timeout(OWNER_ACK_TIMEOUT).emit('share_fs', { op: 'read', path: p, transferId, ...(range ? { range } : {}) }, (err, r) => {
       if (err || !r || !r.ok) {
+        // 共享者报告超出范围（start >= 文件大小）→ 416 + 可恢复大小
+        if (r && r.rangeError && !res.headersSent) {
+          clearTimeout(t.timer);
+          pendingTransfers.delete(transferId);
+          res.status(416);
+          res.setHeader('Content-Range', `bytes */${Number(r.size) || 0}`);
+          res.end();
+          return;
+        }
         failTransfer(transferId, 404, (r && r.error) || '共享者读取文件失败');
       }
       // 读取成功则等待共享者 POST /push 推流（元信息随 push query 到达）
@@ -179,10 +205,18 @@ function registerRoutes(app, ioRef) {
     }
     const name = String(req.query.name || 'file').slice(0, 255);
     const size = Number(req.query.size);
+    dlRes.setHeader('Accept-Ranges', 'bytes');
     dlRes.setHeader('Content-Type', 'application/octet-stream');
     dlRes.setHeader('Content-Disposition', contentDisposition(name));
     if (Number.isFinite(size) && size >= 0) dlRes.setHeader('Content-Length', size);
     dlRes.setHeader('X-Content-Type-Options', 'nosniff');
+    // 分段下载：共享者带 start/total（来自 Range 请求）→ 206 + Content-Range；整文件 → 200
+    const start = req.query.start !== undefined ? Number(req.query.start) : null;
+    const total = req.query.total !== undefined ? Number(req.query.total) : null;
+    if (start !== null && Number.isFinite(start) && start >= 0 && Number.isFinite(total) && total > 0) {
+      dlRes.statusCode = 206;
+      dlRes.setHeader('Content-Range', `bytes ${start}-${start + size - 1}/${total}`);
+    }
     dlRes.on('close', () => { if (!dlRes.writableEnded) req.destroy(); });
     req.on('error', () => dlRes.destroy());
     req.pipe(dlRes);

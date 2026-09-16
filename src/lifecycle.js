@@ -141,6 +141,8 @@ function sweepAll(now = Date.now()) {
   return { messages: sweepMessages(now), files: sweepFiles(now) };
 }
 
+let schedulerTimer = null;
+
 // 启动定期清扫（每小时一次；unref 不阻碍进程退出）并立即清扫一次
 function startScheduler() {
   try {
@@ -156,7 +158,13 @@ function startScheduler() {
     try { sweepAll(); } catch (_) { /* 单次失败下轮再来 */ }
   }, SWEEP_INTERVAL);
   timer.unref();
+  schedulerTimer = timer;
   return timer;
 }
 
-module.exports = { diskUsage, retentionConfig, sweepFiles, sweepMessages, sweepAll, startScheduler };
+// 优雅退出：停止定期清扫
+function stopScheduler() {
+  if (schedulerTimer) { clearInterval(schedulerTimer); schedulerTimer = null; }
+}
+
+module.exports = { diskUsage, retentionConfig, sweepFiles, sweepMessages, sweepAll, startScheduler, stopScheduler };

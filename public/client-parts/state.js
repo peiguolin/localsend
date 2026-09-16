@@ -31,6 +31,10 @@
   st.myRooms = st.myRooms || [];      // 我加入的群聊房 [{id,name,members,...}]
   st.roomUnread = st.roomUnread || new Map(); // room -> 未读数（'main' 也统计）
 
+  // ---------- 置顶消息 + 群公告 ----------
+  st.pins = st.pins || new Map();     // room -> [{msgId, msg, pinnedAt, pinner}]（置顶列表）
+  st.announcement = st.announcement || new Map(); // room -> {text, author, updatedAt}
+
   // ---------- 昵称编辑 ----------
   st.nickEditing = false;
   st.nickErrorTimer = null;

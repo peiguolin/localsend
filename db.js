@@ -114,6 +114,20 @@ function init() {
       detail TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+    CREATE TABLE IF NOT EXISTS pinned (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room TEXT NOT NULL,
+      msg_id TEXT NOT NULL,
+      pinned_at INTEGER NOT NULL,
+      pinner TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_pinned_room ON pinned(room, pinned_at);
+    CREATE TABLE IF NOT EXISTS announcements (
+      room_id TEXT PRIMARY KEY,
+      text TEXT NOT NULL DEFAULT '',
+      author TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL DEFAULT 0
+    );
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -135,6 +149,14 @@ function init() {
   if (!cols.some((c) => c.name === 'stored_name')) {
     db.exec(`ALTER TABLE messages ADD COLUMN stored_name TEXT`);
   }
+
+  // 兼容旧库：rooms 缺 invite_token 列时补上（房间分享/扫码加入需要）
+  try {
+    const roomCols = db.prepare(`PRAGMA table_info(rooms)`).all();
+    if (!roomCols.some((c) => c.name === 'invite_token')) {
+      db.exec(`ALTER TABLE rooms ADD COLUMN invite_token TEXT NOT NULL DEFAULT ''`);
+    }
+  } catch (_) { /* rooms 表尚不存在时由上面的 CREATE 保证结构 */ }
   return db;
 }
 
@@ -458,15 +480,16 @@ function close() {
 function createRoom(room) {
   const d = getDb();
   d.prepare(`
-    INSERT INTO rooms (id, name, owner_client_id, owner_nick, members_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO rooms (id, name, owner_client_id, owner_nick, members_json, created_at, invite_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     room.id,
     room.name,
     room.ownerClientId,
     room.ownerNick,
     JSON.stringify(room.members || []),
-    room.createdAt || Date.now()
+    room.createdAt || Date.now(),
+    room.inviteToken || ''
   );
   return room;
 }
@@ -475,7 +498,7 @@ function loadRooms() {
   const d = getDb();
   const rows = d.prepare(`
     SELECT id, name, owner_client_id AS ownerClientId, owner_nick AS ownerNick,
-           members_json AS membersJson, created_at AS createdAt
+           members_json AS membersJson, created_at AS createdAt, invite_token AS inviteToken
     FROM rooms ORDER BY created_at ASC
   `).all();
   return rows.map((r) => ({
@@ -484,20 +507,71 @@ function loadRooms() {
     ownerClientId: r.ownerClientId,
     ownerNick: r.ownerNick,
     members: (() => { try { return JSON.parse(r.membersJson); } catch (_) { return []; } })(),
-    createdAt: r.createdAt
+    createdAt: r.createdAt,
+    inviteToken: r.inviteToken || ''
   }));
 }
 
 function updateRoom(room) {
   const d = getDb();
   d.prepare(`
-    UPDATE rooms SET name = ?, members_json = ? WHERE id = ?
-  `).run(room.name, JSON.stringify(room.members || []), room.id);
+    UPDATE rooms SET name = ?, members_json = ?, invite_token = ? WHERE id = ?
+  `).run(room.name, JSON.stringify(room.members || []), room.inviteToken || '', room.id);
 }
 
 function deleteRoom(id) {
   const d = getDb();
   d.prepare('DELETE FROM rooms WHERE id = ?').run(id);
+}
+
+// ---------- 置顶消息 ----------
+function listPins(room) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, room, msg_id AS msgId, pinned_at AS pinnedAt, pinner
+    FROM pinned WHERE room = ? ORDER BY pinned_at DESC
+  `).all(room || 'main');
+}
+
+function addPin(room, msgId, pinner) {
+  const d = getDb();
+  const exists = d.prepare('SELECT id FROM pinned WHERE room = ? AND msg_id = ?').get(room || 'main', String(msgId));
+  if (exists) return false;
+  d.prepare('INSERT INTO pinned (room, msg_id, pinned_at, pinner) VALUES (?, ?, ?, ?)')
+    .run(room || 'main', String(msgId), Date.now(), String(pinner || ''));
+  return true;
+}
+
+function removePin(room, msgId) {
+  const d = getDb();
+  return d.prepare('DELETE FROM pinned WHERE room = ? AND msg_id = ?')
+    .run(room || 'main', String(msgId)).changes > 0;
+}
+
+// 清空某房间的全部置顶（历史清空/房间解散时联动）
+function clearPins(room) {
+  const d = getDb();
+  return d.prepare('DELETE FROM pinned WHERE room = ?').run(room || 'main').changes;
+}
+
+// ---------- 群公告（每房间一条，房主/宿主机可改） ----------
+function setAnnouncement(room, text, author) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO announcements (room_id, text, author, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(room_id) DO UPDATE SET text=excluded.text, author=excluded.author, updated_at=excluded.updated_at
+  `).run(String(room || 'main'), String(text || ''), String(author || ''), Date.now());
+}
+
+function getAnnouncement(room) {
+  const d = getDb();
+  return d.prepare('SELECT room_id AS room, text, author, updated_at AS updatedAt FROM announcements WHERE room_id = ?')
+    .get(String(room || 'main')) || null;
+}
+
+function deleteAnnouncement(room) {
+  const d = getDb();
+  d.prepare('DELETE FROM announcements WHERE room_id = ?').run(String(room || 'main'));
 }
 
 // ---------- 用户管理状态（剔除/禁言/禁机器人，跨重启持久） ----------
@@ -604,5 +678,7 @@ module.exports = {
   createEvent, listEvents, getEvent, deleteEvent, listUnfiredReminders, markEventReminded,
   getTranslation, saveTranslation,
   loadUserAdmin, setUserAdmin, getMessagesBefore, loadRoomBot, setRoomBot,
-  insertAudit, listAudit
+  insertAudit, listAudit,
+  listPins, addPin, removePin, clearPins,
+  setAnnouncement, getAnnouncement, deleteAnnouncement
 };

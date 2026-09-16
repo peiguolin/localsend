@@ -5,6 +5,7 @@ const state = require('./state');
 const { decorateHistory } = require('./filemeta');
 const { purgeChatLog } = require('./chatlog');
 const { isLocalSocket } = require('./util');
+const { loadRoomPins } = require('./rt-pin');
 
 // ============================================================
 //  群聊房间（自定义房间，独立 room 号，消息按房间路由）
@@ -40,7 +41,8 @@ function publicRoomInfo(room) {
     ownerClientId: room.ownerClientId,
     ownerNick: room.ownerNick,
     members: room.members,
-    createdAt: room.createdAt
+    createdAt: room.createdAt,
+    inviteToken: room.inviteToken || ''
   };
 }
 
@@ -105,7 +107,8 @@ function register(ioRef, socket) {
       ownerClientId: socket.data.clientId,
       ownerNick: socket.data.nickname,
       members,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      inviteToken: crypto.randomBytes(8).toString('hex') // 分享链接 / 扫码加入凭据
     };
     room.name = String((data && data.name) || '').trim().slice(0, 30) || autoRoomName(room);
 
@@ -145,7 +148,7 @@ function register(ioRef, socket) {
     cb({ ok: true, room: info });
   });
 
-  // 加载房间历史（切换房间时）
+  // 加载房间历史（切换房间时）；附带群公告与置顶列表（房主可管，全员可见）
   socket.on('room_history', (data, cb) => {
     cb = typeof cb === 'function' ? cb : () => {};
     const room = String((data && data.room) || 'main');
@@ -154,7 +157,9 @@ function register(ioRef, socket) {
     }
     try {
       const history = decorateHistory(store.loadMessages(200, room));
-      cb({ ok: true, room, history });
+      const announcement = store.getAnnouncement(room);
+      const pins = loadRoomPins(room);
+      cb({ ok: true, room, history, announcement, pins });
     } catch (e) {
       cb({ ok: false, error: e.message });
     }
@@ -181,6 +186,8 @@ function register(ioRef, socket) {
       }
       groupRooms.delete(roomId);
       store.deleteRoom(roomId);
+      try { store.clearPins(roomId); } catch (_) { /* 忽略 */ }
+      try { store.deleteAnnouncement(roomId); } catch (_) { /* 忽略 */ }
       // 让所有在线成员离开 socket room
       for (const s of io.sockets.sockets.values()) if (s.rooms && s.rooms.has(roomId)) s.leave(roomId);
       socket.emit('group_disbanded', { room: roomId });
@@ -235,6 +242,7 @@ function register(ioRef, socket) {
     try {
       const r = store.clearHistory(roomId, false);
       purgeChatLog(roomId);
+      try { store.clearPins(roomId); } catch (_) { /* 置顶随历史一并清除 */ }
       cb({ ok: true, ...r });
       io.to(roomId).emit('room_cleared', { room: roomId, nickname: socket.data.nickname, timestamp: Date.now() });
       io.to(roomId).emit('system_message', {
@@ -245,6 +253,25 @@ function register(ioRef, socket) {
     } catch (e) {
       cb({ ok: false, error: e.message });
     }
+  });
+
+  // 重置房间邀请链接（旧链接全部失效；仅房主或宿主机）
+  socket.on('room_invite_reset', (data, cb) => {
+    cb = typeof cb === 'function' ? cb : () => {};
+    const roomId = String((data && data.room) || '');
+    const gr = groupRooms.get(roomId);
+    if (!gr) return cb({ ok: false, error: '房间不存在' });
+    const isOwner = !!(socket.data.clientId && socket.data.clientId === gr.ownerClientId);
+    if (!isOwner && !isLocalSocket(socket)) {
+      return cb({ ok: false, error: '仅房主或宿主机可重置邀请链接' });
+    }
+    gr.inviteToken = crypto.randomBytes(8).toString('hex');
+    store.updateRoom(gr);
+    io.to(roomId).emit('system_message', {
+      type: 'group', room: roomId, nickname: socket.data.nickname,
+      text: `${socket.data.nickname} 重置了本房间的邀请链接`, timestamp: Date.now()
+    });
+    cb({ ok: true, room: publicRoomInfo(gr) });
   });
 }
 

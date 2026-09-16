@@ -13,9 +13,29 @@ function loadMeta() {
   }
 }
 
-function saveMeta(storedName, originalName, size, relPath) {
+// sha256 → { storedName, size, relPath } 的缓存索引（秒传去重用；saveMeta/deleteMeta 时失效重建）
+let hashIndexCache = null;
+function buildHashIndex() {
+  const idx = new Map();
+  const meta = loadMeta();
+  for (const [storedName, info] of Object.entries(meta)) {
+    if (info && info.sha256) idx.set(String(info.sha256).toLowerCase(), { storedName, size: Number(info.size) || 0 });
+  }
+  return idx;
+}
+function findByHash(sha256) {
+  const h = String(sha256 || '').toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(h)) return null;
+  if (!hashIndexCache) hashIndexCache = buildHashIndex();
+  return hashIndexCache.get(h) || null;
+}
+
+function saveMeta(storedName, originalName, size, relPath, sha256) {
   const db = loadMeta();
-  db[storedName] = { originalName, size, uploadedAt: Date.now(), relPath: relPath || storedName };
+  const entry = { originalName, size, uploadedAt: Date.now(), relPath: relPath || storedName };
+  if (sha256) entry.sha256 = String(sha256).toLowerCase();
+  db[storedName] = entry;
+  hashIndexCache = null;
   try {
     fs.writeFileSync(META_FILE, JSON.stringify(db, null, 2));
   } catch (_) {
@@ -33,6 +53,7 @@ function deleteMeta(storedName) {
   const db = loadMeta();
   if (!(storedName in db)) return;
   delete db[storedName];
+  hashIndexCache = null;
   try {
     fs.writeFileSync(META_FILE, JSON.stringify(db, null, 2));
   } catch (_) { /* 忽略 */ }
@@ -150,7 +171,7 @@ function decorateHistory(msgs) {
 }
 
 module.exports = {
-  loadMeta, saveMeta, getOriginalName, deleteMeta, deleteStoredFile,
+  loadMeta, saveMeta, getOriginalName, deleteMeta, deleteStoredFile, findByHash,
   checkImageMagic, detectImageMime,
   STORED_NAME_RE, resolveStoredFile,
   decorateMsgUrls, restoreStoredNames, decorateHistory

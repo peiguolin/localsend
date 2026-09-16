@@ -167,6 +167,7 @@ function register(ioRef, socket) {
     try {
       const r = store.clearHistory('main', !!(data && data.includeStrokes));
       purgeChatLog('main');
+      try { store.clearPins('main'); } catch (_) { /* 置顶随历史一并清除 */ }
       if (data && data.includeStrokes) {
         wbStrokes.length = 0;
         state.wbTotalPoints = 0;

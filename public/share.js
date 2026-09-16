@@ -59,10 +59,11 @@
   // ---------- 状态 ----------
   const fsSupported = 'showDirectoryPicker' in window;
   let shares = [];               // 服务器推送的共享列表
-  let myShare = null;            // { id, name, dirHandle, canWrite }
+  let myShare = null;            // { id, name, dirHandle, canWrite, password }
   const tokens = new Map();      // shareId -> 访问 token
   let current = null;            // 正在浏览的 { share, path: [seg, ...] }
   let pendingPwdShare = null;    // 正在输入密码的共享
+  const shareStore = window.chatApp.shareStore || null;
 
   const ICON_DIR = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
   const ICON_FILE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>';
@@ -198,6 +199,8 @@
       else showShareHome();
     }
     renderShares();
+    // 连接就绪后尝试恢复上次共享（句柄权限仍授予则自动恢复，否则显示恢复条）
+    tryRestoreShare();
   });
 
   // ---------- 创建 / 管理 / 取消共享 ----------
@@ -251,9 +254,13 @@
         csTip.textContent = (res && res.error) || '创建共享失败';
         return;
       }
-      myShare = { id: res.shareId, name, dirHandle: handle, canWrite };
+      myShare = { id: res.shareId, name, dirHandle: handle, canWrite, password: password || null };
       tokens.set(res.shareId, res.token);
       closeModal(createShareModal);
+      // 持久化句柄：刷新页面后自动恢复共享（权限仍授予时）
+      if (shareStore) shareStore.save({ name, password: password || null, writable: canWrite, handle }).catch(() => {});
+      const restoreBox = document.getElementById('restoreShareBox');
+      if (restoreBox) restoreBox.hidden = true;
       renderShares();
       setHint(
         shareHomeHint,
@@ -298,7 +305,13 @@
         return;
       }
       myShare.name = res.share.name;
+      if (payload.password === null) myShare.password = null;
+      else if (payload.password) myShare.password = payload.password;
       closeModal(manageShareModal);
+      // 同步句柄记录（改名/改密码后刷新恢复用新配置）
+      if (shareStore && myShare.dirHandle) {
+        shareStore.save({ name: myShare.name, password: myShare.password, writable: myShare.canWrite, handle: myShare.dirHandle }).catch(() => {});
+      }
       renderShares();
       setHint(shareHomeHint, '共享设置已保存', 'success');
     });
@@ -308,9 +321,62 @@
     if (!myShare) return;
     socket.emit('share_unregister', { shareId: myShare.id }, () => {
       myShare = null;
+      // 主动取消共享 → 清除句柄记录（下次刷新不再自动恢复，避免"关不掉"的错觉）
+      if (shareStore) shareStore.clear().catch(() => {});
       renderShares();
       setHint(shareHomeHint, '已取消共享', 'success');
     });
+  }
+
+  // ============================================================
+  //  共享句柄持久化恢复：页面刷新后自动恢复上次共享（权限已授予时）
+  // ============================================================
+  function doRestore(rec) {
+    if (!shareStore) return;
+    socket.emit('share_register', {
+      name: rec.name, password: rec.password || null, writable: !!rec.writable
+    }, (res) => {
+      if (res && res.ok) {
+        myShare = { id: res.shareId, name: rec.name || res.name || '恢复的共享', dirHandle: rec.handle, canWrite: !!rec.writable, password: rec.password || null };
+        tokens.set(res.shareId, res.token);
+        renderShares();
+        setHint(shareHomeHint, `已自动恢复共享「${myShare.name}」`, 'success');
+      } else {
+        setHint(shareHomeHint, (res && res.error) || '恢复共享失败', 'error');
+      }
+    });
+  }
+
+  // 权限需重新授权时（readwrite 模式刷新后通常要手势）→ 显示一键恢复条
+  function showRestoreBar(rec) {
+    const box = document.getElementById('restoreShareBox');
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = `
+      <span class="restore-share-info">📁 检测到上次共享的「${escapeHtml(rec.name)}」</span>
+      <button class="tool-btn" id="restoreShareBtn" type="button">恢复共享</button>`;
+    box.querySelector('#restoreShareBtn').addEventListener('click', async () => {
+      let perm;
+      try { perm = await shareStore.requestPermission(rec.handle, !!rec.writable); } catch (_) { perm = 'denied'; }
+      if (perm === 'granted') {
+        box.hidden = true;
+        doRestore(rec);
+      } else {
+        setHint(shareHomeHint, '未获得该文件夹的访问授权，无法恢复共享', 'error');
+      }
+    });
+  }
+
+  async function tryRestoreShare() {
+    if (myShare || !shareStore || !shareStore.isSupported) return;
+    let rec;
+    try { rec = await shareStore.load(); } catch (_) { return; }
+    if (!rec || !rec.handle) return;
+    let perm;
+    try { perm = await shareStore.queryPermission(rec.handle, !!rec.writable); } catch (_) { perm = 'prompt'; }
+    if (perm === 'granted') doRestore(rec);
+    else if (perm === 'prompt') showRestoreBar(rec);
+    // denied：句柄已失效，静默忽略
   }
 
   // ---------- 进入共享（密码校验） ----------
@@ -534,7 +600,8 @@
     return entries;
   }
 
-  // 下载：先 ack 确认可读，再把文件内容 POST 推流给服务器中转
+  // 下载：先 ack 确认可读（含文件大小），再把文件内容 POST 推流给服务器中转。
+  // Range 支持：req.range 存在时按 start/end 切片（断点续传/分段下载），服务器回 206。
   async function localRead(req, reply) {
     const parts = splitPath(req.path);
     const name = parts.pop();
@@ -546,14 +613,35 @@
     } catch (err) {
       return reply({ ok: false, error: friendlyErr(err) });
     }
-    reply({ ok: true });
+    let slice = file;
+    let start = 0;
+    let hasRange = false;
+    if (req.range) {
+      hasRange = true;
+      // 解析范围：bytes=-N 表示"最后 N 字节"（start 缺省），归一化为绝对 start..end
+      let rs = req.range.start;
+      let re = req.range.end;
+      if (rs === null && re !== null) {
+        rs = Math.max(0, file.size - re);
+        re = null;
+      }
+      rs = rs == null ? 0 : rs;
+      if (rs >= file.size) {
+        return reply({ ok: false, rangeError: true, size: file.size, error: '超出文件范围' });
+      }
+      const end = re == null ? file.size - 1 : Math.min(re, file.size - 1);
+      slice = file.slice(rs, end + 1);
+      start = rs;
+    }
+    reply({ ok: true, size: file.size });
     // 推流失败无需再 ack（服务器侧有超时与断开清理）
     try {
       const url = `/api/share/${encodeURIComponent(myShare.id)}/push` +
         `?transferId=${encodeURIComponent(req.transferId)}` +
         `&token=${encodeURIComponent(myToken())}` +
-        `&name=${encodeURIComponent(file.name)}&size=${file.size}`;
-      await fetch(url, { method: 'POST', body: file });
+        `&name=${encodeURIComponent(file.name)}&size=${slice.size}` +
+        (hasRange ? `&start=${start}&total=${file.size}` : '');
+      await fetch(url, { method: 'POST', body: slice });
     } catch (_) { /* 下载方已断开或网络错误 */ }
   }
 

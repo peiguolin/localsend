@@ -1429,6 +1429,11 @@ body {
 @media (max-width: 720px) {
   .board-hint { display: none; }
   .board-size-label input[type="range"] { width: 70px; }
+  /* 房间标题栏按钮多了（分享/公告/机器人/清空）→ 允许换行，提示词整行收起 */
+  .room-titlebar { flex-wrap: wrap; row-gap: 6px; }
+  .room-titlebar .rt-hint { order: 10; flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ann-bar { flex-wrap: wrap; }
+  .ann-meta { flex-basis: 100%; margin-top: 0; }
 }
 
 /* ===== 白板实时光标 ===== */
@@ -2459,6 +2464,126 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
   align-items: center;
   gap: 10px;
 }
+
+/* ===== 房间分享 / 群公告 / 置顶 ===== */
+.rt-share,
+.rt-ann {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 550;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.rt-share:hover,
+.rt-ann:hover {
+  border-color: var(--accent, #4f6ef7);
+  color: var(--accent, #4f6ef7);
+  background: rgba(79, 110, 247, 0.06);
+}
+
+/* 群公告条（标题栏下方） */
+.ann-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 12px;
+  margin: 8px 0 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #4f6ef7) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #4f6ef7) 25%, transparent);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.ann-icon { flex-shrink: 0; }
+.ann-text { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
+.ann-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+/* 置顶条 */
+.pin-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 8px 0 0;
+  border-radius: 8px;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.08));
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.pin-strip-title {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.pin-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+  overflow: hidden;
+}
+.pin-chip:hover { border-color: var(--accent, #4f6ef7); }
+.pin-chip-name { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+.pin-chip-text { overflow: hidden; text-overflow: ellipsis; }
+.pin-chip-x {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 0 0 2px;
+}
+.pin-chip-x:hover { color: var(--danger); }
+
+/* 消息气泡的置顶角标 */
+.msg-pin-badge { font-size: 11px; margin-right: 2px; }
+
+/* 房间分享弹窗的二维码区 */
+.sr-qr {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 8px;
+  min-height: 180px;
+}
+.sr-qr img { display: block; image-rendering: pixelated; }
+
+/* 共享句柄恢复条 */
+.restore-share-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #4f6ef7) 10%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent, #4f6ef7) 35%, transparent);
+  font-size: 13px;
+}
+.restore-share-info { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 日历 ===== */
 .calendar-main {

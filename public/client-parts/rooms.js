@@ -30,6 +30,25 @@
   const botCfgCancel = document.getElementById('botCfgCancel');
   const botCfgSave = document.getElementById('botCfgSave');
 
+  // 房间分享 / 群公告 / 置顶
+  const roomShareBtn = document.getElementById('roomShareBtn');
+  const roomAnnounceBtn = document.getElementById('roomAnnounceBtn');
+  const annBar = document.getElementById('annBar');
+  const pinStrip = document.getElementById('pinStrip');
+  const shareRoomModal = document.getElementById('shareRoomModal');
+  const srRoomName = document.getElementById('srRoomName');
+  const srQr = document.getElementById('srQr');
+  const srLink = document.getElementById('srLink');
+  const srTip = document.getElementById('srTip');
+  const srReset = document.getElementById('srReset');
+  const srCopy = document.getElementById('srCopy');
+  const srClose = document.getElementById('srClose');
+  const annModal = document.getElementById('annModal');
+  const annText = document.getElementById('annText');
+  const annTip = document.getElementById('annTip');
+  const annCancel = document.getElementById('annCancel');
+  const annSave = document.getElementById('annSave');
+
   // ==================== 群聊房间 ====================
 
   function roomDisplayName(room) {
@@ -163,6 +182,12 @@
         app.appendMsg(sepEnd);
         app.scrollToBottom(false);
         app.initHistoryState(res.history); // 初始化该房间的历史分页起点
+        // 该房间的群公告 + 置顶列表
+        if (res.announcement) state.announcement.set(room, { text: res.announcement.text, author: res.announcement.author, updatedAt: res.announcement.updatedAt });
+        else state.announcement.delete(room);
+        state.pins.set(room, res.pins || []);
+        renderAnnouncement(room, state.announcement.get(room) || null);
+        renderPins(room, state.pins.get(room) || []);
       }
     });
   }
@@ -173,6 +198,7 @@
     let hint = '所有人都在这里聊天';
     let canClear = false;
     let canBot = !!app.isLocal; // 宿主机：任意房间可设机器人
+    let isGroupRoom = state.currentRoom !== 'main';
     if (state.currentRoom !== 'main') {
       const r = state.myRooms.find((x) => x.id === state.currentRoom);
       title = roomDisplayName(r);
@@ -186,7 +212,230 @@
     if (hintEl) hintEl.textContent = hint;
     roomClearBtn.hidden = !canClear;
     roomBotBtn.hidden = !canBot;
+    // 分享：任何房间都可用（公共房链接无需 token，群聊房带邀请 token）
+    if (roomShareBtn) roomShareBtn.hidden = false;
+    // 公告：房主或宿主机可设置（与置顶同权限）
+    if (roomAnnounceBtn) roomAnnounceBtn.hidden = !(app.canManageRoom && app.canManageRoom());
+    // 公告/置顶条随房间切换刷新
+    renderAnnouncement(state.currentRoom, state.announcement.get(state.currentRoom) || null);
+    renderPins(state.currentRoom, state.pins.get(state.currentRoom) || []);
+    void isGroupRoom;
   }
+
+  // ---------- 群公告条（标题栏下方；全员可见） ----------
+  function renderAnnouncement(room, ann) {
+    if (!annBar) return;
+    if (!ann || !ann.text) {
+      annBar.hidden = true;
+      annBar.innerHTML = '';
+      return;
+    }
+    annBar.hidden = false;
+    const time = ann.updatedAt ? ` · ${fmtTimeShort(ann.updatedAt)}` : '';
+    annBar.innerHTML = `
+      <span class="ann-icon">📢</span>
+      <span class="ann-text">${escapeHtml(ann.text)}</span>
+      <span class="ann-meta">${escapeHtml(ann.author || '')}${time}</span>`;
+  }
+
+  // ---------- 置顶条（标题栏下方；显示被置顶消息，点击滚动定位） ----------
+  function renderPins(room, pins) {
+    if (!pinStrip) return;
+    // 同步已渲染消息的角标（部分测试桩 document 无 querySelectorAll，跳过即可）
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('.msg[data-mid]').forEach((el) => {
+        const mid = el.dataset.mid;
+        const pinned = pins.some((p) => p.msgId === mid);
+        if (app.markMessagePinned) app.markMessagePinned(mid, pinned);
+      });
+    }
+    if (!pins || !pins.length) {
+      pinStrip.hidden = true;
+      pinStrip.innerHTML = '';
+      return;
+    }
+    pinStrip.hidden = false;
+    pinStrip.innerHTML = `<span class="pin-strip-title">📌 置顶</span>`;
+    for (const p of pins.slice(0, 5)) {
+      const m = p.msg;
+      const snippet = m && (m.type === 'image' ? '[图片] ' + (m.fileName || '')
+        : m.type === 'file' ? '[文件] ' + (m.fileName || '')
+        : (m.text || '')).replace(/\s+/g, ' ').slice(0, 24);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'pin-chip';
+      chip.title = '点击定位原消息';
+      chip.innerHTML = `<span class="pin-chip-name">${escapeHtml((m && m.nickname) || '')}</span><span class="pin-chip-text">${escapeHtml(snippet || '')}</span>`;
+      chip.addEventListener('click', () => scrollToMessage(p.msgId));
+      // 房主/宿主机可移除
+      if (app.canManageRoom && app.canManageRoom()) {
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'pin-chip-x';
+        x.title = '取消置顶';
+        x.textContent = '✕';
+        x.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (app.unpinMessage) app.unpinMessage(p.msgId);
+        });
+        chip.appendChild(x);
+      }
+      pinStrip.appendChild(chip);
+    }
+  }
+
+  function fmtTimeShort(ts) {
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // 滚动定位原消息（复用 chat 分片逻辑）
+  function scrollToMessage(mid) {
+    if (!mid) return;
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!el) {
+      app.setHint('原消息不在当前会话中', 'error');
+      return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1200);
+  }
+
+  // ---------- 房间分享（二维码 + 链接；全员可用） ----------
+  function openRoomShare() {
+    if (!shareRoomModal || !srLink || !srQr || !srRoomName) return;
+    const room = state.currentRoom;
+    const r = room === 'main' ? null : state.myRooms.find((x) => x.id === room);
+    const token = r && r.inviteToken;
+    let link;
+    if (room === 'main') {
+      link = location.origin;
+      srTip.textContent = '公共房无需邀请，扫码或用链接即可进入';
+    } else {
+      link = token ? `${location.origin}/?join=${encodeURIComponent(token)}` : location.origin;
+      srTip.textContent = '扫码或打开链接即可加入本群聊（自动成为成员）';
+    }
+    srRoomName.textContent = room === 'main' ? '公共房' : (r ? roomDisplayName(r) : room);
+    srLink.value = link;
+    // 生成二维码（本地 vendor 库，离线可用）
+    if (srQr) {
+      srQr.innerHTML = '';
+      if (window.qrcode) {
+        try {
+          const qr = window.qrcode(0, 'M');
+          qr.addData(link);
+          qr.make();
+          const img = document.createElement('img');
+          img.src = qr.createDataURL(4, 8);
+          img.alt = '房间二维码';
+          img.width = 180;
+          img.height = 180;
+          srQr.appendChild(img);
+        } catch (_) {
+          srQr.textContent = '二维码生成失败，请使用下方链接';
+        }
+      } else {
+        srQr.textContent = '二维码组件未加载，请使用下方链接';
+      }
+    }
+    // 重置邀请链接：仅房主或宿主机
+    if (srReset) {
+      const canReset = app.canManageRoom && app.canManageRoom();
+      srReset.hidden = !(canReset && room !== 'main' && token);
+    }
+    if (shareRoomModal) shareRoomModal.hidden = false;
+    srLink.focus();
+    srLink.select();
+  }
+
+  roomShareBtn.addEventListener('click', openRoomShare);
+  srClose.addEventListener('click', () => { shareRoomModal.hidden = true; });
+  shareRoomModal.addEventListener('click', (e) => {
+    if (e.target === shareRoomModal || e.target.classList.contains('modal-backdrop')) shareRoomModal.hidden = true;
+  });
+  srCopy.addEventListener('click', () => {
+    const link = srLink.value;
+    if (!link) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(
+        () => { srCopy.textContent = '已复制 ✓'; setTimeout(() => { srCopy.textContent = '复制链接'; }, 1500); },
+        () => app.setHint('复制失败', 'error')
+      );
+    } else {
+      srLink.select();
+      document.execCommand('copy');
+      srCopy.textContent = '已复制 ✓';
+      setTimeout(() => { srCopy.textContent = '复制链接'; }, 1500);
+    }
+  });
+  srReset.addEventListener('click', () => {
+    socket.emit('room_invite_reset', { room: state.currentRoom }, (res) => {
+      if (res && res.ok && res.room) {
+        const idx = state.myRooms.findIndex((x) => x.id === res.room.id);
+        if (idx >= 0) state.myRooms[idx] = res.room;
+        app.setHint('已重置邀请链接（旧链接失效）', 'success');
+        openRoomShare(); // 重新生成二维码与链接
+      } else {
+        app.setHint((res && res.error) || '重置失败', 'error');
+      }
+    });
+  });
+
+  // ---------- 群公告设置（房主或宿主机） ----------
+  function openAnnouncementModal() {
+    if (!annModal || !annText) return;
+    annTip.textContent = '';
+    const cur = state.announcement.get(state.currentRoom);
+    annText.value = (cur && cur.text) || '';
+    annModal.hidden = false;
+    annText.focus();
+  }
+  roomAnnounceBtn.addEventListener('click', openAnnouncementModal);
+  annCancel.addEventListener('click', () => { annModal.hidden = true; });
+  annModal.addEventListener('click', (e) => {
+    if (e.target === annModal || e.target.classList.contains('modal-backdrop')) annModal.hidden = true;
+  });
+  annSave.addEventListener('click', () => {
+    const text = annText.value.trim();
+    socket.emit('room_announcement_set', { room: state.currentRoom, text }, (res) => {
+      if (res && res.ok) {
+        annModal.hidden = true;
+        app.setHint(text ? '公告已发布' : '公告已清除', 'success');
+      } else {
+        annTip.textContent = (res && res.error) || '发布失败';
+      }
+    });
+  });
+
+  // 广播：公告 / 置顶变更（当前房间立即刷新；其它房间仅更新缓存，切房时生效）
+  socket.on('room_announcement', (data) => {
+    if (!data || !data.room) return;
+    state.announcement.set(data.room, { text: data.text, author: data.author, updatedAt: data.updatedAt });
+    if (data.room === state.currentRoom) renderAnnouncement(data.room, state.announcement.get(data.room));
+  });
+  socket.on('room_pinned', (data) => {
+    if (!data || !data.room) return;
+    const list = state.pins.get(data.room) || [];
+    if (!list.some((p) => p.msgId === data.msgId)) {
+      state.pins.set(data.room, [{ msgId: data.msgId, pinnedAt: data.pinnedAt, pinner: data.pinner, msg: data.msg }].concat(list));
+    }
+    if (data.room === state.currentRoom) {
+      renderPins(data.room, state.pins.get(data.room));
+      if (app.markMessagePinned) app.markMessagePinned(data.msgId, true);
+    }
+  });
+  socket.on('room_unpinned', (data) => {
+    if (!data || !data.room) return;
+    const list = (state.pins.get(data.room) || []).filter((p) => p.msgId !== data.msgId);
+    state.pins.set(data.room, list);
+    if (data.room === state.currentRoom) {
+      renderPins(data.room, list);
+      if (app.markMessagePinned) app.markMessagePinned(data.msgId, false);
+    }
+  });
+
 
   // ---------- 房间级机器人覆盖（宿主机或房主） ----------
   function openBotConfigModal() {
@@ -237,6 +486,8 @@
     if (!data || data.room !== state.currentRoom) return;
     chatArea.innerHTML = '';
     state.msgStore.clear();
+    state.pins.set(data.room, []);
+    renderPins(data.room, []);
   });
 
   // 公共房历史被清空（宿主机操作后广播）
@@ -244,6 +495,8 @@
     if (state.currentRoom !== 'main') return;
     chatArea.innerHTML = '';
     state.msgStore.clear();
+    state.pins.set('main', []);
+    renderPins('main', []);
   });
 
   // 退出/解散群聊
@@ -409,6 +662,8 @@
     renderRoomList,
     switchRoom,
     updateRoomUnreadBadge,
-    updateRoomTitlebar
+    updateRoomTitlebar,
+    renderAnnouncement,
+    renderPins
   });
 })();

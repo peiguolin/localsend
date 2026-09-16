@@ -63,20 +63,64 @@
     }).then((r) => r.json().catch(() => ({ ok: false, error: '响应解析失败' })));
   }
 
+  // 计算文件内容 sha256（秒传去重用；crypto.subtle 不可用/失败时返回 null 走普通上传）
+  async function fileSha256(file) {
+    try {
+      if (!file || typeof file.arrayBuffer !== 'function' || !window.crypto || !window.crypto.subtle) return null;
+      const CHUNK = 4 * 1024 * 1024;
+      const buf = new Uint8Array(file.size);
+      let off = 0;
+      for (let i = 0; i < file.size; i += CHUNK) {
+        const part = new Uint8Array(await file.slice(i, Math.min(i + CHUNK, file.size)).arrayBuffer());
+        buf.set(part, off);
+        off += part.length;
+      }
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function uploadFile(file, caption) {
     if (!file) return { ok: false };
     app.setHint(`正在上传 ${file.name} … 准备中`);
     try {
-      // 1) 初始化（同一文件会返回已收分片 → 续传）
+      // 0) 秒传：先算内容 hash，服务端命中已存文件则零流量复用
+      const sha256 = await fileSha256(file);
+
+      // 1) 初始化（同一文件会返回已收分片 → 续传；sha256 命中 → 直接 dedup）
       const init = await postJson('/upload/init', {
         fileName: encodeURIComponent(file.name),
         size: file.size,
-        lastModified: file.lastModified
+        lastModified: file.lastModified,
+        ...(sha256 ? { sha256 } : {})
       });
       if (!init || !init.ok) {
         app.setHint((init && init.error) || '初始化上传失败', 'error');
         return init || { ok: false };
       }
+
+      // 秒传命中：跳过全部分片，直接走 complete 的 dedup 分支
+      if (init.dedup) {
+        const fdD = new FormData();
+        fdD.append('dedup', '1');
+        fdD.append('storedName', init.storedName);
+        fdD.append('originalName', encodeURIComponent(file.name));
+        fdD.append('nickname', state.myNickname);
+        fdD.append('clientId', state.myClientId);
+        fdD.append('room', state.currentRoom);
+        if (caption) fdD.append('text', caption);
+        const compD = await fetch('/upload/complete', { method: 'POST', body: fdD })
+          .then((r) => r.json().catch(() => null)).catch(() => null);
+        if (!compD || !compD.ok) {
+          app.setHint((compD && compD.error) || '发送文件失败', 'error');
+          return compD || { ok: false };
+        }
+        app.setHint(`已发送 ${file.name}（秒传，内容已在服务器）`, 'success');
+        return compD;
+      }
+
       const { uploadId, chunkSize, totalChunks, received } = init;
       const sentSet = new Set(received || []);
       const already = sentSet.size;
@@ -100,7 +144,7 @@
         app.setHint(`正在上传 ${file.name} … ${Math.round((done / totalChunks) * 100)}%`);
       }
 
-      // 3) 合并 + 进聊天（带文字说明 caption）
+      // 3) 合并 + 进聊天（带文字说明 caption；sha256 供服务端完整性校验/兜底去重）
       const fd2 = new FormData();
       fd2.append('uploadId', uploadId);
       fd2.append('originalName', encodeURIComponent(file.name));
@@ -110,6 +154,7 @@
       fd2.append('clientId', state.myClientId);
       fd2.append('room', state.currentRoom);
       if (caption) fd2.append('text', caption);
+      if (sha256) fd2.append('sha256', sha256);
       const comp = await fetch('/upload/complete', { method: 'POST', body: fd2 })
         .then((r) => r.json().catch(() => null)).catch(() => null);
       if (!comp || !comp.ok) {
