@@ -128,6 +128,7 @@
     botEnabled: '启用 AI 机器人', botName: '机器人昵称', botBaseUrl: '接口地址（OpenAI 兼容）',
     botApiKey: 'API Key（只写，不回显）', botModel: '模型名', botPrompt: '系统提示词（可选）',
     botContextN: '上下文条数', botTimeoutMs: '生成超时(ms)',
+    botVision: '允许机器人看图（视觉模型；图片会发送到接口）',
     msgRateLimit: '发言上限(条/窗口，0=不限)', msgRateWindowSec: '限流窗口(秒)'
   };
 
@@ -137,7 +138,7 @@
     { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'maxFileMB', 'msgTtlDays'] },
     { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
-    { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
+    { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botVision', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
     { id: 'behavior', title: '行为与限制', desc: '发言限流 · 防刷屏自动禁言', fields: ['msgRateLimit', 'msgRateWindowSec'] },
     // 用户管理：非静态配置，special 视图（在线用户列表 + 剔除/禁言/机器人权限）
     { id: 'users',    title: '用户管理',   desc: '在线用户 · 剔除 / 禁言 / 机器人权限', fields: [], special: 'users', countLabel: '在线管理' }

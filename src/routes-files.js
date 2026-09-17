@@ -14,6 +14,7 @@ const { nextMsgId, chatLogPush, parseMentions } = require('./chatlog');
 const { canSendToRoom } = require('./rt-rooms');
 const { isLocalAddr } = require('./util');
 const { checkAllowed } = require('./moderation');
+const rtBot = require('./rt-bot');
 
 // 流式计算文件 sha256（秒传去重 / 合并完整性校验用）
 function computeFileSha256(filePath) {
@@ -47,6 +48,8 @@ function registerRoutes(app, io) {
       chatLogPush(msg);
       store.insertMessage(msg);
       io.to(room).emit('chat_message', msg);
+      // 视觉机器人：配文 @机器人 时异步触发（图片走 HTTP，不经 socket 文字处理器）
+      rtBot.handleUploadImage(io, msg).catch(() => {});
       return { ok: true, ...base, type: 'image', imageUrl };
     }
     // 语音消息：音频魔数命中 → type 仍为 file，附 audio=true（前端渲染内嵌播放器）

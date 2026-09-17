@@ -30,6 +30,7 @@ const CONFIG_DEFS = {
   botPrompt:    { def: '',    type: 'str', env: 'LOCALSEND_BOT_PROMPT',     restart: false },
   botContextN:  { def: 10,    type: 'int', env: 'LOCALSEND_BOT_CONTEXT_N',  restart: false },
   botTimeoutMs: { def: 60000, type: 'int', env: 'LOCALSEND_BOT_TIMEOUT_MS', restart: false },
+  botVision:    { def: false, type: 'bool', env: 'LOCALSEND_BOT_VISION',    restart: false },
   // 发言限流（防刷屏；连续超量自动短禁言；0=不限；均即时生效）
   msgRateLimit:     { def: 12, type: 'int', env: 'LOCALSEND_MSG_RATE_LIMIT',      restart: false },
   msgRateWindowSec: { def: 10, type: 'int', env: 'LOCALSEND_MSG_RATE_WINDOW_SEC', restart: false }

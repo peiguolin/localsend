@@ -4,13 +4,16 @@
  *   botEnabled / botName / botBaseUrl / botApiKey / botModel / botPrompt / botContextN / botTimeoutMs
  * 触发：仅 @提及（预留自动回复槽位，后续在 botTrigger 配置上扩展）。
  * 注意：API Key 只在服务端持有，GET /api/config 由 rt-config 掩码，客户端不可见。 */
+const fs = require('fs');
 const store = require('../db.js');
 const state = require('./state');
 const { currentConfig } = require('./config');
 const { isLocalSocket } = require('./util');
 const { chatLog, nextMsgId, chatLogPush } = require('./chatlog');
+const { resolveStoredFile, detectImageMime } = require('./filemeta');
 
 const BOT_SENDER_ID = 'bot';
+const VISION_MAX_BYTES = 8 * 1024 * 1024; // 发往第三方前限制图片体积（base64 会再膨胀 ~33%）
 
 // 启动时从 DB 恢复房间级机器人覆盖（跨重启持久）
 function loadRoomBotFromDb() {
@@ -48,8 +51,8 @@ function buildContext(room, socketId, curText, n) {
   }));
 }
 
-// 构造请求参数（流式开关由调用方传）
-function buildRequest(cfg, prompt, context, userText, stream) {
+// 构造请求参数（流式开关由调用方传；userContent 可为字符串，或多模态 [{type:'text'|'image_url'}]）
+function buildRequest(cfg, prompt, context, userContent, stream) {
   const base = String(cfg.botBaseUrl || '').replace(/\/+$/, '');
   if (!base) throw new Error('未配置接口地址');
   return {
@@ -66,7 +69,7 @@ function buildRequest(cfg, prompt, context, userText, stream) {
         messages: [
           { role: 'system', content: prompt || `你是「${cfg.botName}」，局域网聊天室里的 AI 助手。用与用户一致的语言简洁回答。` },
           ...context,
-          { role: 'user', content: userText }
+          { role: 'user', content: userContent }
         ]
       })
     }
@@ -79,11 +82,11 @@ function httpError(r, j) {
 
 // 流式调用：解析 OpenAI 兼容 SSE，每个增量回调 onDelta(piece, full)；返回完整文本。
 // 端点若不支持流式（返回普通 JSON），自动退化为一次性返回。
-async function streamLLM(cfg, prompt, context, userText, onDelta) {
+async function streamLLM(cfg, prompt, context, userContent, onDelta) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.botTimeoutMs || 60000);
   try {
-    const { url, options } = buildRequest(cfg, prompt, context, userText, true);
+    const { url, options } = buildRequest(cfg, prompt, context, userContent, true);
     const r = await fetch(url, { ...options, signal: controller.signal });
     const ct = r.headers.get('content-type') || '';
     if (!r.ok) {
@@ -134,58 +137,96 @@ async function streamLLM(cfg, prompt, context, userText, onDelta) {
   }
 }
 
+// 统一的生成并回复流程（文字 / 图片两条触发路径共用）
+// opts: { room, clientId, socketId, userContent, contextText }
+function runBotReply(io, opts) {
+  const cfg = currentConfig();
+  const room = String(opts.room || 'main');
+  const ov = state.roomBotConfig.get(room) || {};
+  if (generating.has(room)) return; // 该房间生成中，忽略重复触发
+  generating.add(room);
+  const botName = String(cfg.botName || '机器人');
+  const prompt = ov.prompt || cfg.botPrompt;
+
+  (async () => {
+    const tempId = nextMsgId();
+    const startedAt = Date.now();
+    io.to(room).emit('bot_start', { tempId, room, nickname: botName });
+    try {
+      const context = buildContext(room, opts.socketId || '', opts.contextText || '', cfg.botContextN);
+      const reply = await streamLLM(cfg, prompt, context, opts.userContent, (piece, full) => {
+        io.to(room).emit('bot_delta', { tempId, room, piece, full });
+      });
+      const msg = {
+        id: nextMsgId(),
+        type: 'text',
+        room,
+        senderId: BOT_SENDER_ID,
+        clientId: 'bot:' + botName,
+        nickname: botName,
+        text: reply,
+        mentions: [],
+        timestamp: startedAt,
+        isBot: true
+      };
+      chatLogPush(msg);
+      store.insertMessage(msg);
+      store.trimMessages(room);
+      io.to(room).emit('bot_done', { tempId, room, id: msg.id });
+      io.to(room).emit('chat_message', msg);
+    } catch (e) {
+      io.to(room).emit('bot_error', { tempId, room, error: e.message || '未知错误' });
+    } finally {
+      generating.delete(room);
+    }
+  })();
+}
+
+// 图片消息触发（由 routes-files 在图片上传入库/广播后调用）：
+// 仅当全局/房间启用 + 开启视觉 + 配文 @机器人 + 发送者未被禁机器人 时触发。
+// msg: 已发布的图片消息（含 storedName/text/room/clientId 等）
+async function handleUploadImage(io, msg) {
+  try {
+    if (!msg || msg.type !== 'image') return;
+    const cfg = currentConfig();
+    const room = String(msg.room || 'main');
+    const ov = state.roomBotConfig.get(room) || {};
+    const enabled = (ov.enabled === null || ov.enabled === undefined) ? cfg.botEnabled : !!ov.enabled;
+    if (!enabled || !cfg.botVision) return;
+    const caption = String(msg.text || '').trim();
+    if (!caption || !mentionsBot(caption, cfg.botName)) return;
+    const cid = String(msg.clientId || '');
+    if (cid && state.botBans.has(cid)) return;
+
+    // 读图 → base64 data URL（体积超限跳过，避免发往第三方过大）
+    const filePath = resolveStoredFile(msg.storedName);
+    if (!filePath) return;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > VISION_MAX_BYTES) return;
+    const mime = detectImageMime(msg.storedName, filePath);
+    if (!mime) return;
+    const dataUrl = `data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`;
+
+    const userContent = [
+      { type: 'text', text: caption },
+      { type: 'image_url', image_url: { url: dataUrl } }
+    ];
+    runBotReply(io, { room, clientId: cid, socketId: '', userContent, contextText: caption });
+  } catch (_) { /* 读图/触发失败不影响图片本身已发送 */ }
+}
+
 function register(io, socket) {
   // 挂在 chat_message 上（rt-chat 先注册，先入库/广播，这里再触发）
   socket.on('chat_message', (data) => {
     const cfg = currentConfig();
     const room = String((data && data.room) || 'main');
-    // 房间级覆盖：enabled=null 继承全局；true/false 覆盖本房间开关；prompt 覆盖本房间提示词
     const ov = state.roomBotConfig.get(room) || {};
     const enabled = (ov.enabled === null || ov.enabled === undefined) ? cfg.botEnabled : !!ov.enabled;
     if (!enabled) return;
     const text = String((data && data.text) || '').trim();
     if (!text || !mentionsBot(text, cfg.botName)) return; // 目前仅 @提及触发
-    // 该用户被禁止 @机器人 → 静默不触发
     if (state.botBans.has(String(socket.data.clientId || ''))) return;
-    if (generating.has(room)) return; // 该房间生成中，忽略重复触发
-    generating.add(room);
-    const botName = String(cfg.botName || '机器人');
-    const prompt = ov.prompt || cfg.botPrompt; // 本房间自定义提示词优先
-
-    (async () => {
-      // 流式回复的临时气泡 id：bot_start/bot_delta/bot_error 用它定位同一条气泡；
-      // 最终以正式 chat_message（含持久化 id）为准，迟到加入者/历史仍只看正式消息
-      const tempId = nextMsgId();
-      const startedAt = Date.now();
-      io.to(room).emit('bot_start', { tempId, room, nickname: botName });
-      try {
-        const context = buildContext(room, socket.id, text, cfg.botContextN);
-        const reply = await streamLLM(cfg, prompt, context, text, (piece, full) => {
-          io.to(room).emit('bot_delta', { tempId, room, piece, full });
-        });
-        const msg = {
-          id: nextMsgId(),
-          type: 'text',
-          room,
-          senderId: BOT_SENDER_ID,
-          clientId: 'bot:' + botName,
-          nickname: botName,
-          text: reply,
-          mentions: [],
-          timestamp: startedAt,
-          isBot: true
-        };
-        chatLogPush(msg);
-        store.insertMessage(msg);
-        store.trimMessages(room);
-        io.to(room).emit('bot_done', { tempId, room, id: msg.id });
-        io.to(room).emit('chat_message', msg);
-      } catch (e) {
-        io.to(room).emit('bot_error', { tempId, room, error: e.message || '未知错误' });
-      } finally {
-        generating.delete(room);
-      }
-    })();
+    runBotReply(io, { room, clientId: socket.data.clientId, socketId: socket.id, userContent: text, contextText: text });
   });
 
   // 查询/设置某房间的机器人覆盖（宿主机或该房间房主）：enabled 三态（null=继承/true/false）、prompt（留空=继承）
@@ -208,4 +249,4 @@ function register(io, socket) {
   });
 }
 
-module.exports = { register, loadRoomBotFromDb };
+module.exports = { register, loadRoomBotFromDb, handleUploadImage };
