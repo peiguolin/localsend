@@ -15,9 +15,12 @@
   const callMembers = document.getElementById('callMembers');
   const callTimerEl = document.getElementById('callTimer');
   const callAudios = document.getElementById('callAudios');
+  const callVideos = document.getElementById('callVideos');
   const callAcceptBtn = document.getElementById('callAcceptBtn');
   const callRejectBtn = document.getElementById('callRejectBtn');
   const callMuteBtn = document.getElementById('callMuteBtn');
+  const callCamBtn = document.getElementById('callCamBtn');
+  const callFlipBtn = document.getElementById('callFlipBtn');
   const callEndBtn = document.getElementById('callEndBtn');
 
   // ---------- 多方语音通话（WebRTC Mesh 房间模型） ----------
@@ -48,11 +51,15 @@
     callAcceptBtn.hidden = true;
     callRejectBtn.hidden = true;
     callMuteBtn.hidden = true;
+    callCamBtn.hidden = true;
+    callFlipBtn.hidden = true;
     callEndBtn.hidden = true;
     callStatus.hidden = false;
     callStatus.textContent = '';
     callTitle.textContent = '语音通话';
     callMembers.innerHTML = '';
+    callVideos.hidden = true;
+    callVideos.innerHTML = '';
   }
 
   // 渲染房间成员 chips（已接通 + 主叫侧仍在振铃的）
@@ -80,8 +87,12 @@
     callRejectBtn.hidden = !(uiState === 'incoming');
     callMuteBtn.hidden = !(uiState === 'active');
     callMuteBtn.textContent = state.muted ? '取消静音' : '静音';
+    callCamBtn.hidden = !(uiState === 'active' && state.videoMode);
+    callCamBtn.textContent = state.camOn ? '关摄像头' : '开摄像头';
+    callFlipBtn.hidden = !(uiState === 'active' && state.videoMode && state.camOn);
     callEndBtn.hidden = false;
     callEndBtn.textContent = (uiState === 'ringing') ? '取消' : '挂断';
+    const mode = state.videoMode ? '视频' : '语音';
     if (uiState === 'ringing') {
       callTitle.textContent = '正在呼叫…';
       callStatus.textContent = '等待接听';
@@ -90,13 +101,19 @@
       const who = state.roster[0] ? state.roster[0].nickname : '';
       const group = state.ringingTargets.length > 1;
       callTitle.textContent = '来电';
-      callStatus.textContent = (group ? `${who} 邀请你加入群聊通话` : `${who} 邀请你语音通话`);
+      callStatus.textContent = (group ? `${who} 邀请你加入群聊${mode}通话` : `${who} 邀请你${mode}通话`);
       callStatus.hidden = false;
     } else if (uiState === 'active') {
-      callTitle.textContent = state.roster.length > 2 ? `通话中 (${state.roster.length} 人)` : '通话中';
+      callTitle.textContent = state.videoMode
+        ? (state.roster.length > 2 ? `视频通话中 (${state.roster.length} 人)` : '视频通话中')
+        : (state.roster.length > 2 ? `通话中 (${state.roster.length} 人)` : '通话中');
       callStatus.hidden = true;
       callTimerEl.hidden = false;
     }
+    // 视频模式通话中：显示视频网格（tile 自带名字），隐藏成员 chips
+    const showGrid = state.videoMode && uiState === 'active';
+    callVideos.hidden = !showGrid;
+    callMembers.hidden = showGrid;
     renderCallMembers();
   }
 
@@ -153,19 +170,35 @@
     if (p) return p;
     p = new RTCPeerConnection(RTC_CONFIG);
     if (state.localStream) state.localStream.getTracks().forEach((t) => p.addTrack(t, state.localStream));
-    // 每路远端音频一个独立 audio 元素（Mesh 多路同时播放）
-    const audioEl = document.createElement('audio');
-    audioEl.autoplay = true;
-    audioEl.hidden = true;
-    audioEl.dataset.peer = peerId;
-    callAudios.appendChild(audioEl);
-    p.ontrack = (e) => {
-      if (e.streams && e.streams[0]) {
-        audioEl.srcObject = e.streams[0];
-        audioEl.hidden = false;
-        audioEl.play().catch(() => {});
-      }
-    };
+    if (state.videoMode) {
+      // 视频模式：每路远端一个视频 tile（音视频在同一 <video> 上播放）
+      const nickname = (state.roster.find((m) => m.id === peerId) || {}).nickname || '对方';
+      const tile = createRemoteTile(peerId, nickname);
+      callVideos.appendChild(tile);
+      const videoEl = tile.querySelector('video');
+      p.ontrack = (e) => {
+        if (!e.streams || !e.streams[0]) return;
+        videoEl.srcObject = e.streams[0];
+        videoEl.play().catch(() => {});
+        const hasVideo = e.streams[0].getVideoTracks().length > 0;
+        tile.classList.toggle('no-video', !hasVideo || hiddenRemoteVideos.has(peerId));
+        setupSpeakerMeter(peerId, e.streams[0]);
+      };
+    } else {
+      // 语音模式：每路远端一个隐藏 <audio>（原逻辑，独立播放）
+      const audioEl = document.createElement('audio');
+      audioEl.autoplay = true;
+      audioEl.hidden = true;
+      audioEl.dataset.peer = peerId;
+      callAudios.appendChild(audioEl);
+      p.ontrack = (e) => {
+        if (e.streams && e.streams[0]) {
+          audioEl.srcObject = e.streams[0];
+          audioEl.hidden = false;
+          audioEl.play().catch(() => {});
+        }
+      };
+    }
     p.onicecandidate = (e) => {
       if (e.candidate && state.callState === 'active' && state.roomId) {
         socket.emit('rtc_ice', { toId: peerId, roomId: state.roomId, candidate: e.candidate });
@@ -177,6 +210,8 @@
         removePeer(peerId);
       }
     };
+    // 视频轨道增删等触发的重协商入口
+    p.onnegotiationneeded = () => maybeRenegotiate(p, peerId);
     state.peers.set(peerId, p);
     return p;
   }
@@ -184,12 +219,21 @@
   function removePeer(peerId) {
     const p = state.peers.get(peerId);
     if (p) {
-      try { p.onicecandidate = null; p.ontrack = null; p.onconnectionstatechange = null; } catch (_) {}
+      try { p.onicecandidate = null; p.ontrack = null; p.onconnectionstatechange = null; p.onnegotiationneeded = null; } catch (_) {}
       try { p.close(); } catch (_) {}
       state.peers.delete(peerId);
     }
     const audioEl = callAudios.querySelector(`audio[data-peer="${peerId}"]`);
     if (audioEl) audioEl.remove();
+    const tile = getRemoteTile(peerId);
+    if (tile) tile.remove();
+    hiddenRemoteVideos.delete(peerId);
+    const meter = speakerAnalysers.get(peerId);
+    if (meter) {
+      try { meter.src.disconnect(); meter.ctx.close(); } catch (_) {}
+      speakerAnalysers.delete(peerId);
+    }
+    if (state.activeSpeakerId === peerId) state.activeSpeakerId = '';
   }
 
   function closeAllPeers() {
@@ -197,16 +241,220 @@
     state.peers.clear();
   }
 
+  // ---------- 视频通话（方案 B：全员网格 + 说话人高亮 + 每路可开关 + 重协商） ----------
+  const SPEAKER_THRESHOLD = 8;          // 音量阈值（RMS），低于视为静音
+  const speakerAnalysers = new Map();   // peerId -> {ctx, src, analyser, data}
+  const hiddenRemoteVideos = new Set(); // 本地隐藏的远端视频（仅本地生效，音频不受影响）
+
+  // 音量均方根（供说话人检测与单测）
+  function computeRms(data) {
+    if (!data || !data.length) return 0;
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    return Math.sqrt(sum / data.length);
+  }
+
+  // 渲染一个远端成员 tile（<video> + 名字 + 未开摄像头占位 + 隐藏按钮）
+  function createRemoteTile(peerId, nickname) {
+    const tile = document.createElement('div');
+    tile.className = 'call-video-tile';
+    tile.dataset.peer = peerId;
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.className = 'call-video';
+    const name = document.createElement('div');
+    name.className = 'call-video-name';
+    name.textContent = nickname || '对方';
+    const off = document.createElement('div');
+    off.className = 'call-video-off';
+    off.textContent = '📷 未开摄像头';
+    const hideBtn = document.createElement('button');
+    hideBtn.type = 'button';
+    hideBtn.className = 'call-video-mute';
+    hideBtn.title = '隐藏/显示该路视频';
+    hideBtn.textContent = '🙈';
+    hideBtn.addEventListener('click', () => {
+      if (hiddenRemoteVideos.has(peerId)) {
+        hiddenRemoteVideos.delete(peerId);
+        video.hidden = false;
+        tile.classList.remove('no-video');
+      } else {
+        hiddenRemoteVideos.add(peerId);
+        video.hidden = true;
+        tile.classList.add('no-video');
+      }
+    });
+    tile.appendChild(video);
+    tile.appendChild(name);
+    tile.appendChild(off);
+    tile.appendChild(hideBtn);
+    return tile;
+  }
+
+  function getRemoteTile(peerId) {
+    return callVideos.querySelector(`[data-peer="${CSS.escape(peerId)}"]`);
+  }
+
+  // 说话人检测：为每路远端流挂音量分析（不连 destination，避免双路播放）
+  function setupSpeakerMeter(peerId, stream) {
+    if (!state.videoMode) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      const ctx = new AC();
+      const src = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      speakerAnalysers.set(peerId, { ctx, src, analyser, data: new Uint8Array(analyser.frequencyBinCount) });
+    } catch (_) {}
+  }
+
+  function stopSpeakerMeters() {
+    for (const [, m] of speakerAnalysers) {
+      try { m.src.disconnect(); m.ctx.close(); } catch (_) {}
+    }
+    speakerAnalysers.clear();
+    state.activeSpeakerId = '';
+  }
+
+  function setActiveSpeaker(peerId) {
+    state.activeSpeakerId = peerId || '';
+    callVideos.querySelectorAll('.call-video-tile').forEach((t) => {
+      if (t.classList.contains('local')) return;
+      t.classList.toggle('speaking', t.dataset.peer === state.activeSpeakerId);
+    });
+  }
+
+  function tickActiveSpeaker() {
+    if (!state.videoMode || state.callState !== 'active') return;
+    let best = null;
+    let bestLevel = 0;
+    for (const [peerId, m] of speakerAnalysers) {
+      try { m.analyser.getByteFrequencyData(m.data); } catch (_) { continue; }
+      const level = computeRms(m.data);
+      if (level > SPEAKER_THRESHOLD && level > bestLevel) { best = peerId; bestLevel = level; }
+    }
+    setActiveSpeaker(best);
+  }
+
+  // 摄像头开关：增/删视频轨道并触发重协商
+  async function toggleCamera() {
+    if (!state.localStream || state.callState !== 'active') return;
+    if (state.camOn) {
+      // 关闭：从所有 PC 移除视频轨道并停止摄像头
+      const vids = state.localStream.getVideoTracks().slice();
+      for (const t of vids) {
+        for (const p of state.peers.values()) {
+          try {
+            const sender = (p.getSenders ? p.getSenders() : []).find((s) => s.track === t);
+            if (sender) p.removeTrack(sender);
+          } catch (_) {}
+        }
+        try { t.stop(); } catch (_) {}
+        try { state.localStream.removeTrack(t); } catch (_) {}
+      }
+      state.camOn = false;
+      callCamBtn.textContent = '开摄像头';
+      callFlipBtn.hidden = true;
+      refreshLocalPreview();
+    } else {
+      try {
+        const v = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: state.camFacing, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        const vt = v.getVideoTracks()[0];
+        if (!vt) { app.setHint('无法打开摄像头', 'error'); return; }
+        state.localStream.addTrack(vt);
+        for (const p of state.peers.values()) {
+          try { p.addTrack(vt, state.localStream); } catch (_) {}
+        }
+        state.camOn = true;
+        callCamBtn.textContent = '关摄像头';
+        callFlipBtn.hidden = false;
+        refreshLocalPreview();
+      } catch (_) {
+        app.setHint('无法打开摄像头（权限被拒或无摄像头）', 'error');
+        return;
+      }
+    }
+    // 轨道变更 → 对每条连接重协商
+    for (const [peerId, p] of state.peers) maybeRenegotiate(p, peerId);
+  }
+
+  // 摄像头前后切换：用新 facingMode 重新采集视频轨道并替换（含各 PC 轨道 + 重协商）
+  async function flipCamera() {
+    if (!state.videoMode || !state.camOn || state.callState !== 'active') return;
+    const next = state.camFacing === 'user' ? 'environment' : 'user';
+    try {
+      const v = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: next, width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      const vt = v.getVideoTracks()[0];
+      if (!vt) { app.setHint('该设备没有其他摄像头', 'error'); return; }
+      // 移除旧视频轨道（各 PC sender + localStream）并停止
+      const oldTracks = state.localStream.getVideoTracks().slice();
+      for (const old of oldTracks) {
+        for (const p of state.peers.values()) {
+          try {
+            const sender = (p.getSenders ? p.getSenders() : []).find((s) => s.track === old);
+            if (sender) p.removeTrack(sender);
+          } catch (_) {}
+        }
+        try { state.localStream.removeTrack(old); } catch (_) {}
+        try { old.stop(); } catch (_) {}
+      }
+      // 挂上新轨道
+      state.localStream.addTrack(vt);
+      for (const p of state.peers.values()) {
+        try { p.addTrack(vt, state.localStream); } catch (_) {}
+      }
+      state.camFacing = next;
+      refreshLocalPreview();
+      for (const [peerId, p] of state.peers) maybeRenegotiate(p, peerId);
+    } catch (_) {
+      app.setHint('无法切换摄像头（无可用摄像头或权限被拒）', 'error');
+    }
+  }
+
+  // ---------- 重协商（视频轨道增删；简单完美协商：发起方在 stable 才发 offer） ----------
+  function maybeRenegotiate(p, peerId) {
+    if (!p || state.callState !== 'active') return;
+    if (p.signalingState && p.signalingState !== 'stable') { p._renegotiateQueued = true; return; }
+    if (p._negotiating) { p._renegotiateQueued = true; return; }
+    renegotiate(p, peerId);
+  }
+
+  async function renegotiate(p, peerId) {
+    if (!p) return;
+    p._negotiating = true;
+    try {
+      const offer = await p.createOffer();
+      await p.setLocalDescription(offer);
+      socket.emit('rtc_offer', { toId: peerId, roomId: state.roomId, sdp: p.localDescription });
+    } catch (_) { /* 忽略 */ }
+    p._negotiating = false;
+    if (p._renegotiateQueued) { p._renegotiateQueued = false; maybeRenegotiate(p, peerId); }
+  }
+
   // 收尾：清理媒体/连接/UI/铃声，回到 idle
   function cleanupCall(message) {
     stopCallTimer();
     stopRingTone();
     closeAllPeers();
+    stopSpeakerMeters();
     if (state.localStream) {
       state.localStream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
       state.localStream = null;
     }
     callAudios.innerHTML = '';
+    callVideos.innerHTML = '';
+    hiddenRemoteVideos.clear();
+    state.videoMode = false;
+    state.camOn = false;
+    state.camFacing = 'user';
+    state.activeSpeakerId = '';
     state.roomId = '';
     state.callerId = '';
     state.myRole = '';
@@ -222,33 +470,79 @@
     cleanupCall(message || '通话结束');
   }
 
-  async function getMic() {
+  // 媒体采集：视频通话先取音频再叠加视频（任一被拒/无摄像头 → 自动降级纯语音）
+  async function getMedia(videoWanted) {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('浏览器不支持麦克风（需 HTTPS + 现代浏览器）');
+      throw new Error('浏览器不支持麦克风/摄像头（需 HTTPS + 现代浏览器）');
     }
-    return navigator.mediaDevices.getUserMedia({ audio: true });
+    const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!videoWanted) return audio;
+    try {
+      const v = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      const vt = v.getVideoTracks()[0];
+      if (vt) audio.addTrack(vt);
+    } catch (_) { /* 无摄像头/权限被拒 → 保持纯音频 */ }
+    return audio;
+  }
+
+  // 本地预览：视频模式下通话开始后创建（muted 防啸叫）
+  function setupLocalPreview() {
+    if (!state.videoMode || !state.localStream) return;
+    if (!callVideos.querySelector('.call-video-tile.local')) {
+      const tile = document.createElement('div');
+      tile.className = 'call-video-tile local';
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;
+      video.srcObject = state.localStream;
+      const name = document.createElement('div');
+      name.className = 'call-video-name';
+      name.textContent = '我';
+      tile.appendChild(video);
+      tile.appendChild(name);
+      callVideos.appendChild(tile);
+    }
+    refreshLocalPreview();
+  }
+
+  function refreshLocalPreview() {
+    if (!state.videoMode) return;
+    const tile = callVideos.querySelector('.call-video-tile.local');
+    if (!tile) return;
+    const video = tile.querySelector('video');
+    if (video) video.srcObject = state.localStream;
+    const has = !!(state.camOn && state.localStream && state.localStream.getVideoTracks().length);
+    tile.classList.toggle('no-video', !has);
   }
 
   // ---------- 对外动作 ----------
-  // 主叫：对一批目标发起通话（1:1 即 targets=[1人]）
-  async function startCall(targets) {
+  // 主叫：对一批目标发起通话（1:1 即 targets=[1人]）；videoMode=true 发起视频通话
+  async function startCall(targets, videoMode) {
     if (state.callState !== 'idle') return;
     const list = (targets || []).filter((t) => t && t.id && t.id !== state.myId);
     if (!list.length) return;
     state.myRole = 'caller';
     state.callerId = state.myId;
+    state.videoMode = !!videoMode;
+    state.camOn = !!videoMode;
     state.roster = [{ id: state.myId, nickname: state.myNickname }];
     state.ringingTargets = list.map((t) => ({ id: t.id, nickname: t.nickname || '对方' }));
     state.callState = 'ringing';
     setCallUI('ringing');
     startRingTone();
     try {
-      state.localStream = await getMic();
+      state.localStream = await getMedia(state.videoMode);
     } catch (_) {
       failCall('无法获取麦克风权限，请检查浏览器设置');
       return;
     }
-    socket.emit('call_user', { targets: list.map((t) => t.id) });
+    // 请求了视频但被降级成纯音频（无摄像头/被拒）→ 以实际轨道为准
+    if (state.videoMode && !state.localStream.getVideoTracks().length) state.camOn = false;
+    setupLocalPreview();
+    socket.emit('call_user', { targets: list.map((t) => t.id), video: state.videoMode });
   }
 
   // 被叫：接听（接听后作为新成员向既有成员发 offer）
@@ -256,12 +550,14 @@
     if (state.callState !== 'incoming') return;
     stopRingTone();
     try {
-      state.localStream = await getMic();
+      state.localStream = await getMedia(state.videoMode);
     } catch (_) {
       socket.emit('call_reject', { roomId: state.roomId });
       failCall('无法获取麦克风权限，已拒绝通话');
       return;
     }
+    if (state.videoMode && !state.localStream.getVideoTracks().length) state.camOn = false;
+    setupLocalPreview();
     state.callState = 'active';
     socket.emit('call_accept', { roomId: state.roomId });
     startCallTimer();
@@ -304,6 +600,8 @@
     state.roomId = data.roomId || '';
     state.callerId = data.fromId || '';
     state.myRole = 'callee';
+    state.videoMode = data.video === true;
+    state.camOn = state.videoMode;
     state.roster = (data.roster && data.roster.length ? data.roster : [{ id: data.fromId, nickname: data.fromName }]);
     state.ringingTargets = data.targets || [];
     state.callState = 'incoming';
@@ -314,7 +612,7 @@
       try {
         const who = state.roster[0] ? state.roster[0].nickname : '';
         const group = state.ringingTargets.length > 1;
-        const n = new Notification(`${who} ${group ? '邀请你加入群聊通话' : '邀请你语音通话'}`, { body: '点击接听', icon: app.drawFavicon(0), tag: 'call' });
+        const n = new Notification(`${who} ${state.videoMode ? (group ? '邀请你加入群聊视频通话' : '邀请你视频通话') : (group ? '邀请你加入群聊通话' : '邀请你语音通话')}`, { body: '点击接听', icon: app.drawFavicon(0), tag: 'call' });
         n.onclick = () => { window.focus(); };
       } catch (_) {}
     }
@@ -421,7 +719,10 @@
     if (!fromId || fromId === state.myId) return;
     try {
       const p = ensurePeer(fromId);
-      if (p.remoteDescription) return; // 已有协商
+      // 重协商：若本地正持有未完成的 offer → rollback 后采纳对方（避免 glare）
+      if (p.signalingState === 'have-local-offer') {
+        try { await p.setLocalDescription({ type: 'rollback' }); } catch (_) {}
+      }
       await p.setRemoteDescription(data.sdp);
       const answer = await p.createAnswer();
       await p.setLocalDescription(answer);
@@ -432,8 +733,12 @@
   socket.on('rtc_answer', async (data) => {
     if (state.callState === 'idle' || data.roomId !== state.roomId) return;
     const p = state.peers.get(data.fromId);
-    if (!p || p.remoteDescription) return;
-    try { await p.setRemoteDescription(data.sdp); } catch (_) { /* 忽略 */ }
+    if (!p) return;
+    try {
+      await p.setRemoteDescription(data.sdp);
+      // 若有排队的重协商（前一条 offer 未应答期间发生的轨道变更）→ 补发
+      if (p._renegotiateQueued) { p._renegotiateQueued = false; maybeRenegotiate(p, data.fromId); }
+    } catch (_) { /* 状态不符时忽略 */ }
   });
 
   socket.on('rtc_ice', async (data) => {
@@ -443,10 +748,15 @@
     try { await p.addIceCandidate(data.candidate); } catch (_) { /* 候选可能已过期 */ }
   });
 
+  // 说话人检测循环（仅视频模式活跃；无 AudioContext 环境静默跳过）
+  setInterval(tickActiveSpeaker, 250);
+
   // 按钮绑定（多选呼叫按钮 groupCallBtn/callSelectedBtn/callSelectionClearBtn 在 members.js 绑定）
   callAcceptBtn.addEventListener('click', acceptCall);
   callRejectBtn.addEventListener('click', rejectCall);
   callMuteBtn.addEventListener('click', toggleMute);
+  callCamBtn.addEventListener('click', toggleCamera);
+  callFlipBtn.addEventListener('click', flipCamera);
   callEndBtn.addEventListener('click', endCall);
 
   // 断线清理
@@ -457,6 +767,10 @@
   // 暴露给壳与其他分片（日历"一键拉会"等）
   Object.assign(app, {
     startCall,
-    callTargets: (targetIds) => startCall((targetIds || []).map((id) => ({ id, nickname: '' })))
+    callTargets: (targetIds) => startCall((targetIds || []).map((id) => ({ id, nickname: '' }))),
+    toggleCamera,
+    flipCamera,
+    // 视频模块测试钩子（单测用；生产路径由音量检测驱动）
+    __videoTest: { computeRms, setActiveSpeaker, tickActiveSpeaker, createRemoteTile }
   });
 })();

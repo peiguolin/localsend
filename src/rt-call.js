@@ -55,11 +55,12 @@ function handleMemberLeave(socketId, reason) {
 function register(ioRef, socket) {
   io = ioRef;
 
-  // 发起呼叫：targets 支持多个；逐个过滤在线/空闲
+  // 发起呼叫：targets 支持多个；逐个过滤在线/空闲；video 标志（视频通话）透传给被叫
   socket.on('call_user', (data) => {
     if (memberRooms.has(socket.id)) {
       return socket.emit('call_failed', { reason: 'busy', error: '你正在通话中' });
     }
+    const video = data && data.video === true;
     const raw = Array.isArray(data && data.targets) ? data.targets : [];
     const targets = [];   // 可呼叫（在线且空闲）
     const busy = [];
@@ -78,7 +79,7 @@ function register(ioRef, socket) {
       return socket.emit('call_failed', { reason, error: '没有可呼叫的成员（其余忙线或离线）', busy, offline });
     }
     const roomId = crypto.randomBytes(8).toString('hex');
-    const room = { ownerId: socket.id, members: new Set([socket.id]), ringing: new Set() };
+    const room = { ownerId: socket.id, members: new Set([socket.id]), ringing: new Set(), video: video === true };
     for (const t of targets) room.ringing.add(t.id);
     callRooms.set(roomId, room);
     memberRooms.set(socket.id, roomId);
@@ -86,9 +87,9 @@ function register(ioRef, socket) {
     const roster = roomRoster(room);
     for (const t of targets) {
       const s = io.sockets.sockets.get(t.id);
-      if (s && s.connected) s.emit('incoming_call', { roomId, fromId: socket.id, fromName: socket.data.nickname, targets, roster });
+      if (s && s.connected) s.emit('incoming_call', { roomId, fromId: socket.id, fromName: socket.data.nickname, targets, roster, video });
     }
-    socket.emit('call_ringing', { roomId, targets, busy, offline });
+    socket.emit('call_ringing', { roomId, targets, busy, offline, video });
   });
 
   // 接听：从振铃移入已接通，广播给全房间（含新人）以便建立 Mesh 连接

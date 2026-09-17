@@ -73,6 +73,10 @@
   st.ringCtx = null;
   st.ringTimer = null;
   st.muted = false;
+  st.videoMode = false;               // 本次通话是否为视频通话（发起者决定，全房间一致）
+  st.camOn = false;                   // 自己的摄像头当前是否开启（视频模式）
+  st.camFacing = 'user';              // 当前摄像头朝向：'user' 前置 / 'environment' 后置
+  st.activeSpeakerId = '';            // 当前说话人 peerId（音量检测，仅视频模式高亮用）
 
   // ---------- 消息存储（供引用/撤回/右键菜单定位） ----------
   st.msgStore = st.msgStore || new Map(); // id -> 消息原始数据（含 recalled 标记）

@@ -13,8 +13,10 @@
   const onlineCount = document.getElementById('onlineCount');
   const callActionBar = document.getElementById('callActionBar');
   const callSelectedBtn = document.getElementById('callSelectedBtn');
+  const callVideoBtn = document.getElementById('callVideoBtn');
   const callSelectionClearBtn = document.getElementById('callSelectionClearBtn');
   const groupCallBtn = document.getElementById('groupCallBtn');
+  const groupVideoBtn = document.getElementById('groupVideoBtn');
 
   // ---------- 成员列表 ----------
   // state.selectedMembers / state.currentMembers 见 state.js
@@ -24,6 +26,7 @@
     if (n > 0) {
       callActionBar.hidden = false;
       callSelectedBtn.textContent = `发起通话 (${n})`;
+      callVideoBtn.textContent = `视频通话 (${n})`;
     } else {
       callActionBar.hidden = true;
     }
@@ -94,26 +97,39 @@
           app.startCall([{ id, nickname: name }]);
         });
         li.appendChild(callBtn);
+        // 视频通话按钮（快速单呼视频）
+        const camBtn = document.createElement('button');
+        camBtn.type = 'button';
+        camBtn.className = 'member-call member-cam';
+        camBtn.title = `视频呼叫 ${name}`;
+        camBtn.innerHTML =
+          '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M15 10l4.55-2.27A1 1 0 0 1 21 8.64v6.72a1 1 0 0 1-1.45.9L15 14v-4z"/><rect x="2" y="6" width="13" height="12" rx="2"/></svg>';
+        camBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          app.startCall([{ id, nickname: name }], true);
+        });
+        li.appendChild(camBtn);
       }
       memberList.appendChild(li);
     });
   }
 
-  // 群呼：呼叫所有在线成员（不含自己）
-  function groupCall() {
+  // 群呼：呼叫所有在线成员（不含自己）；video 决定语音/视频
+  function groupCall(video) {
     const list = state.currentMembers.filter((m) => m && m.id && m.id !== state.myId);
     if (!list.length) {
       app.setHint('当前没有可呼叫的在线成员', '');
       return;
     }
-    app.startCall(list);
+    app.startCall(list, !!video);
   }
 
-  // 多选呼叫：呼叫已选中的成员
-  function callSelected() {
+  // 多选呼叫：呼叫已选中的成员；video 决定语音/视频
+  function callSelected(video) {
     const list = state.currentMembers.filter((m) => m && state.selectedMembers.has(m.id));
     if (!list.length) return;
-    app.startCall(list);
+    app.startCall(list, !!video);
     state.selectedMembers.clear();
     updateCallActionBar();
     renderMembers(state.currentMembers);
@@ -125,8 +141,10 @@
   });
 
   // 按钮绑定
-  groupCallBtn.addEventListener('click', groupCall);
-  callSelectedBtn.addEventListener('click', callSelected);
+  groupCallBtn.addEventListener('click', () => groupCall(false));
+  groupVideoBtn.addEventListener('click', () => groupCall(true));
+  callSelectedBtn.addEventListener('click', () => callSelected(false));
+  callVideoBtn.addEventListener('click', () => callSelected(true));
   callSelectionClearBtn.addEventListener('click', () => {
     state.selectedMembers.clear();
     updateCallActionBar();

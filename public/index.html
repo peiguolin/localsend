@@ -89,11 +89,19 @@
             </svg>
             群呼
           </button>
+          <button class="group-call-btn" id="groupVideoBtn" type="button" title="视频群呼所有在线成员">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 10l4.55-2.27A1 1 0 0 1 21 8.64v6.72a1 1 0 0 1-1.45.9L15 14v-4z"/>
+              <rect x="2" y="6" width="13" height="12" rx="2"/>
+            </svg>
+            视频群呼
+          </button>
         </div>
         <div class="member-select-hint" id="memberSelectHint">点击成员名字可多选，然后发起通话</div>
         <ul class="member-list" id="memberList"></ul>
         <div class="call-action-bar" id="callActionBar" hidden>
           <button class="call-action-btn" id="callSelectedBtn" type="button">发起通话 (0)</button>
+          <button class="call-action-btn" id="callVideoBtn" type="button">视频通话 (0)</button>
           <button class="call-action-clear" id="callSelectionClearBtn" type="button" title="取消选择">✕</button>
         </div>
 
@@ -467,12 +475,15 @@
       <div class="call-title" id="callTitle">语音通话</div>
       <div class="call-status" id="callStatus">…</div>
       <div class="call-members" id="callMembers"></div>
+      <div class="call-videos" id="callVideos" hidden></div>
       <div class="call-timer" id="callTimer" hidden>00:00</div>
       <div class="call-audios" id="callAudios"></div>
       <div class="call-btns">
         <button class="call-btn call-accept" id="callAcceptBtn" type="button" hidden>接听</button>
         <button class="call-btn call-reject" id="callRejectBtn" type="button" hidden>拒绝</button>
         <button class="call-btn call-mute" id="callMuteBtn" type="button" hidden>静音</button>
+        <button class="call-btn call-cam" id="callCamBtn" type="button" hidden>关摄像头</button>
+        <button class="call-btn call-flip" id="callFlipBtn" type="button" hidden title="切换前/后摄像头">🔄 切换</button>
         <button class="call-btn call-end" id="callEndBtn" type="button">挂断</button>
       </div>
     </div>

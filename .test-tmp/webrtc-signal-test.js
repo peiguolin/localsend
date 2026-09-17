@@ -200,6 +200,26 @@ async function main() {
     const offd = await offP;
     check('呼叫离线 ID → call_failed', !!offd.error);
 
+    console.log('【视频通话：video 标志透传】');
+    const incV = waitEvent(b.s, 'incoming_call');
+    const ringV = waitEvent(a.s, 'call_ringing');
+    a.s.emit('call_user', { targets: [b.id], video: true });
+    const vinc = await incV;
+    const vring = await ringV;
+    check('incoming_call 带 video:true', vinc.video === true);
+    check('call_ringing 带 video:true', vring.video === true);
+    b.s.emit('call_accept', { roomId: vinc.roomId });
+    await waitEvent(a.s, 'room_member_joined');
+    b.s.emit('call_end', { roomId: vinc.roomId });
+    await sleep(100);
+    // 语音通话不误带 video 标志
+    const incA = waitEvent(b.s, 'incoming_call');
+    a.s.emit('call_user', { targets: [b.id] });
+    const ainc = await incA;
+    check('语音通话 incoming_call 无 video 标志', !('video' in ainc) || ainc.video === false);
+    ainc.roomId && b.s.emit('call_reject', { roomId: ainc.roomId });
+    await sleep(100);
+
     console.log('【断线自动离开房间】');
     const incD = waitEvent(b.s, 'incoming_call');
     a.s.emit('call_user', { targets: [b.id] });
