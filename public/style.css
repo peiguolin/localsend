@@ -519,14 +519,17 @@ body {
 
 .sidebar-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
 }
 
+/* 标题独占一行（防 flex 压缩导致中文逐字竖排），群呼按钮并排在下一行 */
 .sidebar-head .sidebar-title {
   margin-bottom: 0;
+  flex: 1 1 100%;
+  white-space: nowrap;
 }
 
 .group-call-btn {
@@ -585,6 +588,7 @@ body {
 
 .call-action-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   margin-top: 10px;
@@ -603,6 +607,7 @@ body {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
+  white-space: nowrap;
 }
 
 .call-action-btn:hover { opacity: 0.88; }
@@ -2251,10 +2256,14 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
 
 .room-section-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   margin-bottom: 6px;
 }
+/* 标题不换行防压缩（放不下时按钮整体换到下一行，而不是标题逐字竖排） */
+.room-section-head .sidebar-title { white-space: nowrap; }
 
 .room-create-btn {
   background: none;
@@ -2473,7 +2482,17 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
     min-width: 0;
     gap: 8px;
   }
-  .title { font-size: 14px; letter-spacing: 0; }
+  .title {
+    font-size: 14px;
+    letter-spacing: 0;
+    /* 单行 + 超长省略号，空间不足时截断而不是逐字竖排 */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 34vw;
+  }
   .badge { padding: 2px 8px; font-size: 11px; flex-shrink: 0; }
   /* tabs 整行换到第二行，横向滚动，按钮不被压缩不换行 */
   .tabs {
@@ -2497,7 +2516,15 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
     flex-shrink: 0;
     margin-left: auto;
   }
-  .my-name { padding: 2px 8px; font-size: 12px; }
+  .my-name {
+    padding: 2px 8px;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 30vw;
+    flex-shrink: 1;
+  }
   .members-label { display: none; }
   .main {
     margin-top: 0;
