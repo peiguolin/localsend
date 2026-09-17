@@ -34,6 +34,7 @@
   // ---------- 置顶消息 + 群公告 ----------
   st.pins = st.pins || new Map();     // room -> [{msgId, msg, pinnedAt, pinner}]（置顶列表）
   st.announcement = st.announcement || new Map(); // room -> {text, author, updatedAt}
+  st.msgReadBy = st.msgReadBy || new Map(); // msgId -> Map<clientId, nickname>（已读回执）
 
   // ---------- 昵称编辑 ----------
   st.nickEditing = false;

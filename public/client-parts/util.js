@@ -42,7 +42,12 @@
   }
 
   window.chatApp = window.chatApp || {};
+  // @全员判定（与 server 端 chatlog.hasMentionAll 同规则：@所有人/@all/@everyone）
+  function hasMentionAll(text) {
+    return /@(?:所有人|everyone)(?![\w一-龥])|@all\b/i.test(String(text || ''));
+  }
+
   window.chatApp.utils = Object.assign({}, window.chatApp.utils, {
-    pad, fmtTime, fmtSize, escapeHtml, mostlyCJK
+    pad, fmtTime, fmtSize, escapeHtml, mostlyCJK, hasMentionAll
   });
 })();

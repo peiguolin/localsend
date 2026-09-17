@@ -158,6 +158,11 @@
           <div class="share-empty" id="browserLoading">加载中…</div>
         </div>
         <div class="upload-hint" id="shareBrowserHint"></div>
+        <div class="dl-manager" id="dlManager" hidden>
+          <div class="dl-manager-title">⬇ 下载管理 <span class="dl-manager-sub">（断点续传：刷新后自动恢复）</span></div>
+          <div id="dlList"></div>
+          <div class="dl-empty" id="dlEmpty">暂无下载任务</div>
+        </div>
       </div>
       <input type="file" id="shareUploadInput" hidden>
     </main>
@@ -341,6 +346,13 @@
     <footer class="inputbar">
       <div class="quote-preview" id="quotePreview" hidden></div>
       <div class="attach-tray" id="attachTray" hidden></div>
+      <div class="voice-bar" id="voiceBar" hidden>
+        <span class="voice-dot"></span>
+        <span class="voice-label">正在录音</span>
+        <span class="voice-time" id="voiceTime">0:00</span>
+        <button type="button" class="voice-stop" id="voiceStopBtn">■ 停止并发送</button>
+        <button type="button" class="voice-cancel" id="voiceCancelBtn" title="取消录音">✕</button>
+      </div>
       <div class="input-row">
         <label class="file-btn" title="选择文件发送">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -349,6 +361,14 @@
           <span>文件</span>
         </label>
         <input type="file" id="fileInput" hidden>
+        <button type="button" id="micBtn" class="mic-btn" title="语音消息">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
         <button type="button" id="emojiBtn" class="emoji-btn" title="插入表情">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
@@ -550,6 +570,7 @@
   <script src="client-parts/emoji.js"></script>
   <script src="client-parts/autocomplete.js"></script>
   <script src="client-parts/upload.js"></script>
+  <script src="client-parts/dl-core.js"></script>
   <script src="share.js"></script>
   <script src="whiteboard.js"></script>
   <script src="screen-share.js"></script>

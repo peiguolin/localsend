@@ -128,6 +128,17 @@ function init() {
       author TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room TEXT NOT NULL,
+      msg_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      nickname TEXT NOT NULL DEFAULT '',
+      emoji TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(room, msg_id, client_id, emoji)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(room, msg_id);
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -574,6 +585,65 @@ function deleteAnnouncement(room) {
   d.prepare('DELETE FROM announcements WHERE room_id = ?').run(String(room || 'main'));
 }
 
+// ---------- 消息表情回应（实时广播 + 持久化；同人同消息同表情唯一） ----------
+// 添加回应：已存在则返回 false（不重复计数）；新增返回 true
+function addReaction(room, msgId, clientId, nickname, emoji) {
+  const d = getDb();
+  const exists = d.prepare('SELECT id FROM reactions WHERE room = ? AND msg_id = ? AND client_id = ? AND emoji = ?')
+    .get(String(room || 'main'), String(msgId), String(clientId || ''), String(emoji || ''));
+  if (exists) return false;
+  d.prepare('INSERT INTO reactions (room, msg_id, client_id, nickname, emoji, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(String(room || 'main'), String(msgId), String(clientId || ''), String(nickname || ''), String(emoji || ''), Date.now());
+  return true;
+}
+
+// 取消回应：返回是否确实移除
+function removeReaction(room, msgId, clientId, emoji) {
+  const d = getDb();
+  return d.prepare('DELETE FROM reactions WHERE room = ? AND msg_id = ? AND client_id = ? AND emoji = ?')
+    .run(String(room || 'main'), String(msgId), String(clientId || ''), String(emoji || '')).changes > 0;
+}
+
+// 批量取一批消息的回应（历史/搜索装饰用）：返回 [{msgId, reactions:[{emoji, count, names, clientIds}]}]
+// 为控制体积 names/clientIds 截断到前 20 个，count 用真实总数
+function loadReactionsForMessages(room, msgIds) {
+  const d = getDb();
+  if (!Array.isArray(msgIds) || !msgIds.length) return [];
+  const ids = msgIds.map((x) => String(x));
+  const rows = d.prepare(`
+    SELECT msg_id AS msgId, emoji, nickname, client_id AS clientId,
+           COUNT(*) OVER (PARTITION BY msg_id, emoji) AS cnt
+    FROM reactions WHERE room = ? AND msg_id IN (${ids.map(() => '?').join(',')})
+    ORDER BY created_at ASC
+  `).all(String(room || 'main'), ...ids);
+  // 聚合（按 消息|表情 去重，保留昵称/客户端 id 列表）
+  const map = new Map(); // key = msgId|emoji -> {emoji, count, names, clientIds}
+  for (const r of rows) {
+    const k = `${r.msgId}|${r.emoji}`;
+    let agg = map.get(k);
+    if (!agg) {
+      agg = { emoji: r.emoji, count: Number(r.cnt) || 0, names: [], clientIds: [] };
+      map.set(k, agg);
+    }
+    if (agg.names.length < 20 && r.nickname && !agg.names.includes(r.nickname)) agg.names.push(r.nickname);
+    if (agg.clientIds.length < 20 && r.clientId && !agg.clientIds.includes(r.clientId)) agg.clientIds.push(r.clientId);
+  }
+  // 按消息分组输出
+  const byMsg = new Map();
+  for (const [k, agg] of map) {
+    const msgId = k.slice(0, k.lastIndexOf('|'));
+    if (!byMsg.has(msgId)) byMsg.set(msgId, []);
+    byMsg.get(msgId).push(agg);
+  }
+  return ids.map((id) => ({ msgId: id, reactions: byMsg.get(id) || [] }));
+}
+
+// 清空某房间全部回应（历史清空/房间解散时联动）
+function clearReactionsForRoom(room) {
+  const d = getDb();
+  return d.prepare('DELETE FROM reactions WHERE room = ?').run(String(room || 'main')).changes;
+}
+
 // ---------- 用户管理状态（剔除/禁言/禁机器人，跨重启持久） ----------
 function loadUserAdmin() {
   const d = getDb();
@@ -680,5 +750,6 @@ module.exports = {
   loadUserAdmin, setUserAdmin, getMessagesBefore, loadRoomBot, setRoomBot,
   insertAudit, listAudit,
   listPins, addPin, removePin, clearPins,
-  setAnnouncement, getAnnouncement, deleteAnnouncement
+  setAnnouncement, getAnnouncement, deleteAnnouncement,
+  addReaction, removeReaction, loadReactionsForMessages, clearReactionsForRoom
 };

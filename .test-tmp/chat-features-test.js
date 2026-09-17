@@ -1,4 +1,4 @@
-/* 聊天增强集成测试：@提及解析/引用快照/撤回权限/文件消息撤回 + 前端资产静态校验 */
+/* 聊天增强集成测试：@提及解析/@全员提醒/引用快照/撤回权限/文件消息撤回 + 前端资产静态校验 */
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const { spawn } = require('child_process');
@@ -85,6 +85,32 @@ async function main() {
     m = await p;
     check('邮箱不误判为提及', m.mentions.length === 0);
 
+    console.log('【@全员提醒】');
+    p = waitMsg(b, (d) => d.text === '@所有人 今晚开会');
+    a.emit('chat_message', { text: '@所有人 今晚开会' });
+    m = await p;
+    check('@所有人 触发 mentionAll', m.mentionAll === true, JSON.stringify(m.mentionAll));
+
+    p = waitMsg(a, (d) => d.text === '@ALL 测试');
+    a.emit('chat_message', { text: '@ALL 测试' });
+    m = await p;
+    check('@all 大小写不敏感', m.mentionAll === true);
+
+    p = waitMsg(a, (d) => d.text === '@everyone 全员到齐');
+    a.emit('chat_message', { text: '@everyone 全员到齐' });
+    m = await p;
+    check('@everyone 触发 mentionAll', m.mentionAll === true);
+
+    p = waitMsg(a, (d) => d.text === '呼叫 call 别误判');
+    a.emit('chat_message', { text: '呼叫 call 别误判' });
+    m = await p;
+    check('单词内 all 不误判为 @all', m.mentionAll !== true, JSON.stringify(m.mentionAll));
+
+    p = waitMsg(a, (d) => d.text === `@${nickB} 单独提醒`);
+    a.emit('chat_message', { text: `@${nickB} 单独提醒` });
+    m = await p;
+    check('普通 @昵称 不触发 mentionAll', m.mentionAll !== true && Array.isArray(m.mentions) && m.mentions.includes(nickB));
+
     console.log('【引用快照】');
     p = waitMsg(a, (d) => d.text === '原消息内容');
     a.emit('chat_message', { text: '原消息内容' });
@@ -150,6 +176,7 @@ async function main() {
     check('chat 分片含撤回/代码复制逻辑',
       chat.includes('chat_recall') && chat.includes('code-copy'));
     check('autocomplete 分片含补全逻辑', ac.includes('ac-box'));
+    check('chat 分片含 @全员高亮逻辑', chat.includes('mention-all') && chat.includes('hasMentionAll'));
     check('client.js 装配了各功能分片',
       shell.includes("require('./client-parts/chat.js')") && shell.includes("require('./client-parts/autocomplete.js')"));
 

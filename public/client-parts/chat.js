@@ -18,7 +18,55 @@
 
   // ---------- 历史分页（往上滚懒加载） ----------
   let historyPrepend = false; // 为 true 时 renderXMsg 改为前插（加载更早消息用）
+
+  // ---------- 消息时间分隔线（今天 / 昨天 / 日期） ----------
+  function dayKey(ts) {
+    const d = new Date(Number(ts) || 0);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  }
+  function dayLabel(ts, nowTs) {
+    const d = new Date(Number(ts) || 0);
+    const n = new Date(Number(nowTs) || Date.now());
+    const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (same(d, n)) return '今天';
+    const y = new Date(n); y.setDate(n.getDate() - 1);
+    if (same(d, y)) return '昨天';
+    const fmt = `${d.getMonth() + 1}月${d.getDate()}日`;
+    return d.getFullYear() === n.getFullYear() ? fmt : `${d.getFullYear()}年${fmt}`;
+  }
+  function makeDayDivider(ts) {
+    const div = document.createElement('div');
+    div.className = 'msg-day-divider';
+    div.innerHTML = `<span>${escapeHtml(dayLabel(ts))}</span>`;
+    return div;
+  }
+  // 在容器里找第一条/最后一条「有时间的消息」（跳过系统消息/分隔线/占位）；兼容真实 DOM 与冒烟桩数组
+  function siblingMsgWithTs(container, fromEnd) {
+    const kids = container.children;
+    for (let i = fromEnd ? kids.length - 1 : 0; fromEnd ? i >= 0 : i < kids.length; fromEnd ? i-- : i++) {
+      const el = kids[i];
+      if (el && el.classList && el.classList.contains('msg') && Number(el.dataset && el.dataset.ts)) return el;
+    }
+    return null;
+  }
+
   function insertMsgNode(div) {
+    const ts = Number(div.dataset && div.dataset.ts) || 0;
+    if (ts) {
+      if (historyPrepend) {
+        // 前插更早消息：与当前最上面一条（更晚的）跨天 → 分隔线插到更早消息之上
+        const first = siblingMsgWithTs(chatArea, false);
+        if (first && Number(first.dataset.ts) && dayKey(ts) !== dayKey(Number(first.dataset.ts))) {
+          app.prependMsg(makeDayDivider(ts));
+        }
+      } else {
+        // 追加新消息：与当前最后一条（更早的）跨天 → 分隔线插到新消息之前
+        const last = siblingMsgWithTs(chatArea, true);
+        if (last && Number(last.dataset.ts) && dayKey(ts) !== dayKey(Number(last.dataset.ts))) {
+          app.appendMsg(makeDayDivider(ts));
+        }
+      }
+    }
     if (historyPrepend) app.prependMsg(div);
     else app.appendMsg(div);
   }
@@ -89,12 +137,16 @@
   }
 
   // ---------- 消息内容渲染：```代码块 / `行内代码` / @提及（全程先转义再拼接，防 XSS） ----------
-  function highlightMentions(html, mentions) {
+  function highlightMentions(html, mentions, mentionAll) {
     const nicks = (mentions || []).slice().sort((a, b) => b.length - a.length);
     for (const nick of nicks) {
       const target = '@' + escapeHtml(nick);
       const cls = nick === state.myNickname ? 'mention mention-me' : 'mention';
       html = html.split(target).join(`<span class="${cls}">${target}</span>`);
+    }
+    if (mentionAll) {
+      // @全员：@所有人 / @all / @everyone（大小写不敏感；与服务端判定同边界规则）
+      html = html.replace(/@(?:所有人|everyone)(?![\w一-龥])|@all\b/ig, (m) => `<span class="mention mention-all">${m}</span>`);
     }
     return html;
   }
@@ -110,12 +162,13 @@
       last = m.index + m[0].length;
     }
     if (last < text.length) segs.push({ t: 'text', c: text.slice(last) });
+    const mentionAll = !!(data && (data.mentionAll === true || app.utils.hasMentionAll(data.text)));
     return segs.map((seg) => {
       if (seg.t === 'code') {
         return `<div class="code-block"><div class="code-bar"><span class="code-lang">${escapeHtml(seg.lang || 'auto')}</span><button class="code-copy" type="button">复制</button></div><pre><code data-lang="${escapeHtml(seg.lang)}">${escapeHtml(seg.c)}</code></pre></div>`;
       }
       let html = escapeHtml(seg.c).replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
-      html = highlightMentions(html, data && data.mentions);
+      html = highlightMentions(html, data && data.mentions, mentionAll);
       return html;
     }).join('');
   }
@@ -193,12 +246,186 @@
     }
   }
 
+  // ---------- 表情回应（实时广播；reactions 见服务端装饰/reaction 事件） ----------
+  // 常用表情快捷板（点击消息上的 🙂 弹出）
+  const REACTION_QUICK = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🔥', '👏', '👍🏻', '🙏', '🤔', '😄', '😍', '😭', '👎', '✅'];
+
+  // 在消息 DOM 上渲染/更新回应条（含添加按钮）
+  function renderReactionBar(div, data) {
+    if (!div) return;
+    let bar = div.querySelector('.reaction-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'reaction-bar';
+      bar.dataset.role = 'reactions';
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'reaction-add-btn';
+      add.title = '添加回应';
+      add.textContent = '🙂';
+      add.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openReactionPicker(add, data);
+      });
+      bar.appendChild(add);
+      const footer = div.querySelector('.msg-footer');
+      if (footer) footer.insertBefore(bar, footer.firstChild);
+    }
+    // 刷新既有 chips（保留添加按钮；按钮在已存在/新建两种情况下都从 bar 内查，避免作用域问题）
+    const addBtn = bar.querySelector('.reaction-add-btn');
+    bar.querySelectorAll('.reaction-chip').forEach((c) => c.remove());
+    const chips = Array.isArray(data.reactions) ? data.reactions : [];
+    for (const r of chips) {
+      // mine 由 clientIds 本地判定（服务端广播里的 mine 是操作者视角，不可直接信）
+      const mine = (r.clientIds || []).includes(state.myClientId);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'reaction-chip' + (mine ? ' mine' : '');
+      chip.dataset.emoji = r.emoji;
+      chip.title = (r.names || []).join('、') || r.emoji;
+      chip.innerHTML = `${escapeHtml(r.emoji)} <b>${r.count}</b>`;
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleReaction(data.id, r.emoji);
+      });
+      if (addBtn) bar.insertBefore(chip, addBtn);
+    }
+  }
+
+  // 实时更新某条消息的回应条
+  function updateReactionBar(mid, reactions) {
+    if (!mid) return;
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!el) return;
+    const stored = state.msgStore.get(mid);
+    if (stored) { stored.reactions = reactions; state.msgStore.set(mid, stored); }
+    renderReactionBar(el, Object.assign({}, stored || {}, { id: mid, reactions }));
+  }
+
+  // 点击某个表情（toggle）：服务端同人同表情点两次 = 取消
+  function toggleReaction(mid, emoji) {
+    if (!mid || !emoji) return;
+    socket.emit('message_reaction', { room: state.currentRoom, msgId: mid, emoji });
+  }
+
+  // 表情选择小面板（消息级的常用表情板；同一时刻只开一个）
+  let activePicker = null;
+  function closeReactionPicker() {
+    if (activePicker) { activePicker.remove(); activePicker = null; }
+  }
+  function openReactionPicker(anchor, data) {
+    closeReactionPicker();
+    const picker = document.createElement('div');
+    picker.className = 'reaction-picker';
+    for (const e of REACTION_QUICK) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = e;
+      b.title = e;
+      b.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeReactionPicker();
+        toggleReaction(data.id, e);
+      });
+      picker.appendChild(b);
+    }
+    document.body.appendChild(picker);
+    activePicker = picker;
+    const r = anchor.getBoundingClientRect();
+    picker.style.left = Math.max(4, Math.min(r.left, window.innerWidth - picker.offsetWidth - 8)) + 'px';
+    picker.style.top = (r.top - picker.offsetHeight - 6) + 'px';
+    setTimeout(() => {
+      document.addEventListener('click', onPickerOutside, { once: true });
+    }, 0);
+    function onPickerOutside() { closeReactionPicker(); }
+  }
+
+  socket.on('message_reaction', (data) => {
+    if (!data || (data.room || 'main') !== state.currentRoom) return;
+    updateReactionBar(data.msgId, data.reactions);
+  });
+
+  // 已读回执（✓ 送达 / ✓✓ 已读 N 人）：仅自己的消息显示，读者列表实时广播
+  function updateReadIndicator(mid) {
+    if (!mid) return;
+    const el = chatArea.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!el) return;
+    const tag = el.querySelector('.msg-read');
+    if (!tag) return;
+    const readers = state.msgReadBy.get(mid) || new Map();
+    const n = readers.size;
+    if (n === 0) {
+      tag.textContent = '✓';
+      tag.title = '已送达';
+      tag.classList.remove('read');
+    } else {
+      tag.textContent = `✓✓ ${n}`;
+      tag.title = '已读：' + Array.from(readers.values()).join('、');
+      tag.classList.add('read');
+    }
+  }
+
+  // 消息页脚：回应条（左）+ 已读标记（右，自己的消息）
+  function appendMsgFooter(div, data) {
+    const isSelf = isOwnMessage(data);
+    const footer = document.createElement('div');
+    footer.className = 'msg-footer';
+    div.appendChild(footer);
+    if (isSelf) {
+      const tag = document.createElement('span');
+      tag.className = 'msg-read';
+      tag.dataset.role = 'read';
+      footer.appendChild(tag);
+      // 历史装饰已带 readBy（会话内已读）→ 并入本地缓存
+      if (Array.isArray(data.readBy)) {
+        let readers = state.msgReadBy.get(data.id);
+        if (!readers) { readers = new Map(); state.msgReadBy.set(data.id, readers); }
+        for (const r of data.readBy) if (r && r.clientId && !readers.has(r.clientId)) readers.set(r.clientId, r.nickname || '');
+      }
+      updateReadIndicator(data.id);
+    }
+    renderReactionBar(div, data);
+  }
+
+  // ---------- 已读回执：向服务器上报"我已读到某时间点"，并接收别人已读广播 ----------
+  const readSentTs = new Map(); // room -> 已上报的 upToTs（节流，避免滚动时狂发）
+  function emitRead(room, upToTs) {
+    if (!room || !upToTs) return;
+    const last = readSentTs.get(room) || 0;
+    if (upToTs <= last) return;
+    readSentTs.set(room, upToTs);
+    socket.emit('read_messages', { room, upToTs });
+  }
+
+  // 历史渲染完成时上报"整屏已读"（welcome / 切房 / 上翻分页）
+  function markHistoryRead(room, msgs) {
+    if (!Array.isArray(msgs) || !msgs.length) return;
+    let max = 0;
+    for (const m of msgs) if (m && m.timestamp && m.timestamp > max) max = m.timestamp;
+    if (max) emitRead(room, max);
+  }
+
+  // 收到别人已读某批消息的广播 → 更新自己消息上的 ✓✓
+  socket.on('messages_read', (data) => {
+    if (!data || (data.room || 'main') !== state.currentRoom) return;
+    if (!data.clientId || data.clientId === state.myClientId) return;
+    const nickname = data.nickname || '某成员';
+    const ids = Array.isArray(data.msgIds) ? data.msgIds : [];
+    for (const id of ids) {
+      let readers = state.msgReadBy.get(id);
+      if (!readers) { readers = new Map(); state.msgReadBy.set(id, readers); }
+      if (!readers.has(data.clientId)) readers.set(data.clientId, nickname);
+      updateReadIndicator(id);
+    }
+  });
+
   function renderTextMsg(data) {
     const isSelf = isOwnMessage(data);
-    const mentionedMe = !isSelf && (data.mentions || []).includes(state.myNickname);
+    const mentionedMe = !isSelf && (app.utils.hasMentionAll(data.text) || (data.mentions || []).includes(state.myNickname));
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other') + (mentionedMe ? ' mentioned' : '') + (data.isBot ? ' bot' : '');
     if (data.id) div.dataset.mid = data.id;
+    if (data.timestamp) div.dataset.ts = data.timestamp;
     div.innerHTML = `
       <div class="msg-header">
         ${data.isBot ? '<span class="msg-bot-badge">🤖</span>' : ''}
@@ -212,6 +439,7 @@
     applyCodeHighlight(div);
     const q = div.querySelector('.msg-quote');
     if (q) q.addEventListener('click', () => scrollToMessage(q.dataset.qid));
+    appendMsgFooter(div, data);
     insertMsgNode(div);
   }
 
@@ -221,17 +449,9 @@
     return `<div class="msg-caption">${renderContentHTML(data.text, data)}</div>`;
   }
 
-  function renderFileMsg(data) {
-    const isSelf = isOwnMessage(data);
-    const div = document.createElement('div');
-    div.className = 'msg ' + (isSelf ? 'self' : 'other');
-    if (data.id) div.dataset.mid = data.id;
-    div.innerHTML = `
-      <div class="msg-header">
-        ${pinBadgeHTML(data)}
-        <span class="msg-nick">${escapeHtml(data.nickname)}</span>
-        <span class="msg-time">${fmtTime(data.timestamp)}</span>
-      </div>
+  // 普通文件卡片气泡
+  function fileBubbleHTML(data) {
+    return `
       <div class="msg-bubble file-bubble">
         <div class="file-card">
           <div class="file-icon">
@@ -246,10 +466,35 @@
           </div>
           <a class="download-btn" href="${escapeHtml(data.downloadUrl)}" download>下载</a>
         </div>
+      </div>`;
+  }
+
+  // 语音消息气泡：内嵌播放器
+  function audioBubbleHTML(data) {
+    return `
+      <div class="msg-bubble audio-bubble">
+        <audio class="msg-audio" controls preload="metadata" src="${escapeHtml(data.downloadUrl)}" title="${escapeHtml(data.fileName)}"></audio>
+        <div class="audio-meta">🎙️ 语音消息 · ${fmtSize(data.size)}</div>
+      </div>`;
+  }
+
+  function renderFileMsg(data) {
+    const isSelf = isOwnMessage(data);
+    const div = document.createElement('div');
+    div.className = 'msg ' + (isSelf ? 'self' : 'other');
+    if (data.id) div.dataset.mid = data.id;
+    if (data.timestamp) div.dataset.ts = data.timestamp;
+    div.innerHTML = `
+      <div class="msg-header">
+        ${pinBadgeHTML(data)}
+        <span class="msg-nick">${escapeHtml(data.nickname)}</span>
+        <span class="msg-time">${fmtTime(data.timestamp)}</span>
       </div>
+      ${data.audio ? audioBubbleHTML(data) : fileBubbleHTML(data)}
       ${captionHTML(data)}
     `;
     applyCodeHighlight(div);
+    appendMsgFooter(div, data);
     insertMsgNode(div);
   }
 
@@ -258,6 +503,7 @@
     const div = document.createElement('div');
     div.className = 'msg ' + (isSelf ? 'self' : 'other');
     if (data.id) div.dataset.mid = data.id;
+    if (data.timestamp) div.dataset.ts = data.timestamp;
     div.innerHTML = `
       <div class="msg-header">
         ${pinBadgeHTML(data)}
@@ -279,6 +525,7 @@
       `;
     });
     applyCodeHighlight(div);
+    appendMsgFooter(div, data);
     insertMsgNode(div);
   }
 
@@ -342,6 +589,8 @@
     // 自己发的消息始终滚到最新（自己输入后自动到底部）
     if (app.isOwnMessage(data)) app.scrollToBottom(true);
     app.handleIncomingMessage(data);
+    // 正在看当前房间且停在底部 → 即时标记已读（自己发的也会上报，服务端会跳过发送者）
+    if (app.isNearBottom && app.isNearBottom()) emitRead(msgRoom, data.timestamp);
   });
 
   // ---------- 机器人流式回复（打字机）----------
@@ -665,6 +914,11 @@
     markMessagePinned,
     canManageRoom,
     pinMessage,
-    unpinMessage
+    unpinMessage,
+    markHistoryRead,
+    emitRead,
+    updateReactionBar,
+    toggleReaction,
+    updateReadIndicator
   });
 })();

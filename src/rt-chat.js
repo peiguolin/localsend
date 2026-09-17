@@ -1,9 +1,11 @@
 /* 聊天：消息收发/撤回/@提及/引用、昵称修改、数据面板（历史搜索/统计/清空） */
 const store = require('../db.js');
 const state = require('./state');
-const { nextMsgId, chatLogPush, chatLogFind, purgeChatLog, quoteSnapshot, parseMentions } = require('./chatlog');
+const { nextMsgId, chatLogPush, chatLogFind, purgeChatLog, quoteSnapshot, parseMentions, hasMentionAll } = require('./chatlog');
 const { hasControlChars, isLocalSocket, broadcastMembers } = require('./util');
 const { decorateHistory, deleteStoredFile } = require('./filemeta');
+const { decorateWithReactions } = require('./rt-reactions');
+const { decorateWithReads } = require('./rt-read');
 const lifecycle = require('./lifecycle');
 const { myShareOf, broadcastShares } = require('./rt-share');
 const { RECALL_WINDOW } = require('./config');
@@ -41,6 +43,7 @@ function register(ioRef, socket) {
       nickname: socket.data.nickname,
       text,
       mentions: parseMentions(text),
+      ...(hasMentionAll(text) ? { mentionAll: true } : {}),
       timestamp: Date.now()
     };
     const quoteId = String((data && data.quoteId) || '');
@@ -132,7 +135,7 @@ function register(ioRef, socket) {
         room,
         limit: Math.min(Number((data && data.limit) || 100), 500)
       });
-      cb({ ok: true, results: decorateHistory(results) });
+      cb({ ok: true, results: decorateWithReads(decorateWithReactions(decorateHistory(results), socket.data.clientId)) });
     } catch (e) {
       cb({ ok: false, error: e.message });
     }
@@ -168,6 +171,7 @@ function register(ioRef, socket) {
       const r = store.clearHistory('main', !!(data && data.includeStrokes));
       purgeChatLog('main');
       try { store.clearPins('main'); } catch (_) { /* 置顶随历史一并清除 */ }
+      try { store.clearReactionsForRoom('main'); } catch (_) { /* 回应随历史一并清除 */ }
       if (data && data.includeStrokes) {
         wbStrokes.length = 0;
         state.wbTotalPoints = 0;
@@ -197,7 +201,7 @@ function register(ioRef, socket) {
     if (!beforeId) return cb({ ok: false, error: '缺少 beforeId' });
     const limit = Math.min(Math.max(Number((data && data.limit) || 50), 1), 200);
     try {
-      cb({ ok: true, room, history: decorateHistory(store.getMessagesBefore(room, beforeId, limit)) });
+      cb({ ok: true, room, history: decorateWithReads(decorateWithReactions(decorateHistory(store.getMessagesBefore(room, beforeId, limit)), socket.data.clientId)) });
     } catch (e) {
       cb({ ok: false, error: e.message });
     }

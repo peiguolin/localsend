@@ -182,6 +182,7 @@
         app.appendMsg(sepEnd);
         app.scrollToBottom(false);
         app.initHistoryState(res.history); // 初始化该房间的历史分页起点
+        if (app.markHistoryRead) app.markHistoryRead(room, res.history);
         // 该房间的群公告 + 置顶列表
         if (res.announcement) state.announcement.set(room, { text: res.announcement.text, author: res.announcement.author, updatedAt: res.announcement.updatedAt });
         else state.announcement.delete(room);

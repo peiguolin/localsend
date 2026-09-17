@@ -76,6 +76,14 @@ async function postComplete(uploadId, originalName, size, totalChunks, clientId)
   return r.json();
 }
 
+async function postAbort(uploadId) {
+  return fetchJson('/upload/abort', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId })
+  });
+}
+
 function startServer() {
   const proc = spawn('node', [path.join(__dirname, '..', 'server.js')], {
     env: {
@@ -232,6 +240,24 @@ async function main() {
       const row = db.prepare("SELECT stored_name AS sn FROM messages WHERE type = 'image'").get();
       check('恢复结果已回写 DB', !!row && !!row.sn, row && row.sn ? row.sn : '(空)');
       db.close();
+    }
+
+    console.log('【/upload/abort 取消上传 → 清理临时分片】');
+    {
+      const fa = '要取消.zip';
+      const fadata = crypto.randomBytes(3 * 1024 * 1024);
+      const ia = await postInit(fa, fadata.length, 1700000000003);
+      await postChunk(ia.uploadId, 0, fadata.slice(0, 2 * 1024 * 1024));
+      const tmpDir = path.join(TEST_UPLOADS, '.tmp', ia.uploadId);
+      check('abort 前临时分片已落盘', fs.existsSync(tmpDir) && fs.readdirSync(tmpDir).length === 1);
+      const badAbort = await postAbort('not-a-valid-id');
+      check('非法 uploadId 被拒', badAbort && badAbort.ok === false);
+      const abortRes = await postAbort(ia.uploadId);
+      check('abort 返回 ok', abortRes && abortRes.ok === true);
+      check('abort 后临时分片被清理', !fs.existsSync(tmpDir));
+      // abort 后该 uploadId 不可再 complete
+      const cAbort = await postComplete(ia.uploadId, fa, fadata.length, 2, 'c-aborted');
+      check('abort 后 complete 报错', cAbort && cAbort.ok === false, cAbort && cAbort.error);
     }
 
     console.log('【分片不完整 → complete 拒绝】');

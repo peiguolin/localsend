@@ -9,12 +9,13 @@ const express = require('express');
 const https = require('https');
 const { Server } = require('socket.io');
 
-const { PORT, ROOT_DIR } = require('./src/config');
+const { PORT, ROOT_DIR, MAX_FILE_SIZE } = require('./src/config');
 const { loadCredentials } = require('./src/certs');
 const state = require('./src/state');
 const store = require('./db.js');
 const { randomNickname, isLocalSocket, broadcastMembers, getLanIPs } = require('./src/util');
 const { decorateHistory } = require('./src/filemeta');
+const { decorateWithReactions } = require('./src/rt-reactions');
 
 const routesFiles = require('./src/routes-files');
 const rtShare = require('./src/rt-share');
@@ -29,6 +30,8 @@ const rtConfig = require('./src/rt-config');
 const rtBot = require('./src/rt-bot');
 const rtAdmin = require('./src/rt-admin');
 const rtPin = require('./src/rt-pin');
+const rtReactions = require('./src/rt-reactions');
+const rtRead = require('./src/rt-read');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -108,7 +111,7 @@ io.on('connection', (socket) => {
   let announcement = null;
   let pins = [];
   try {
-    history = decorateHistory(store.loadMessages(200, 'main'));
+    history = rtRead.decorateWithReads(decorateWithReactions(decorateHistory(store.loadMessages(200, 'main')), socket.data.clientId));
     announcement = store.getAnnouncement('main');
     pins = rtPin.loadRoomPins('main');
   } catch (_) { /* 历史不可用 */ }
@@ -135,6 +138,8 @@ io.on('connection', (socket) => {
   rtBot.register(io, socket); // 需在 rtChat 之后：机器人触发依赖消息已入库/入流水
   rtRooms.register(io, socket);
   rtPin.register(io, socket);
+  rtReactions.register(io, socket);
+  rtRead.register(io, socket);
   rtCall.register(io, socket);
   rtWhiteboard.register(io, socket);
   rtScreenshare.register(io, socket);
@@ -207,7 +212,8 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   console.log(`  本机访问:   https://127.0.0.1:${PORT}`);
   console.log('  首次访问:   自签名证书，浏览器点「高级 → 继续访问」即可');
-  console.log('  上传限制:   单文件最大 200MB');
+  const fileLimitMb = Math.round(MAX_FILE_SIZE / 1024 / 1024);
+  console.log(`  上传限制:   单文件最大 ${fileLimitMb >= 1024 && fileLimitMb % 1024 === 0 ? `${fileLimitMb / 1024}GB` : `${fileLimitMb}MB`}`);
   console.log('  文件夹共享: 共享他人文件夹需使用 Chrome / Edge 浏览器');
   console.log('  按 Ctrl+C 停止服务');
   console.log('==========================================');

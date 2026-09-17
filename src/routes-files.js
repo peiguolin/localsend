@@ -9,7 +9,7 @@ const {
   fileCategory, dateDirName, ensureArchiveDir
 } = require('./config');
 const { decodeOriginalName } = require('./util');
-const { saveMeta, getOriginalName, detectImageMime, STORED_NAME_RE, resolveStoredFile, findByHash, loadMeta } = require('./filemeta');
+const { saveMeta, getOriginalName, detectImageMime, detectAudioMime, STORED_NAME_RE, resolveStoredFile, findByHash, loadMeta } = require('./filemeta');
 const { nextMsgId, chatLogPush, parseMentions } = require('./chatlog');
 const { canSendToRoom } = require('./rt-rooms');
 const { isLocalAddr } = require('./util');
@@ -24,6 +24,12 @@ function computeFileSha256(filePath) {
     rs.on('end', () => resolve(hash.digest('hex')));
     rs.on('error', reject);
   });
+}
+
+// 单文件上限的友好文案（随配置变化，如 2GB）
+function sizeLimitText() {
+  const mb = Math.round(MAX_FILE_SIZE / 1024 / 1024);
+  return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024}GB` : `${mb}MB`;
 }
 
 function registerRoutes(app, io) {
@@ -43,6 +49,15 @@ function registerRoutes(app, io) {
       io.to(room).emit('chat_message', msg);
       return { ok: true, ...base, type: 'image', imageUrl };
     }
+    // 语音消息：音频魔数命中 → type 仍为 file，附 audio=true（前端渲染内嵌播放器）
+    const audioMime = resolved ? detectAudioMime(storedName, resolved) : null;
+    if (audioMime) {
+      const msg = { ...base, type: 'file', audio: true, audioMime };
+      chatLogPush(msg);
+      store.insertMessage(msg);
+      io.to(room).emit('chat_message', msg);
+      return { ok: true, ...base, type: 'file', audio: true, audioMime };
+    }
     const msg = { ...base, type: 'file' };
     chatLogPush(msg);
     store.insertMessage(msg);
@@ -55,7 +70,9 @@ function registerRoutes(app, io) {
     destination: (req, file, cb) => {
       // 还原中文原始文件名，存入 file.decodedName 供后续展示与元数据记录
       file.decodedName = decodeOriginalName(file.originalname);
-      const category = fileCategory(file.decodedName);
+      // 语音消息（audio/* MIME）固定归档到 audio/（webm 扩展名默认会进 video/，这里显式纠正）
+      const isAudioMime = String(file.mimetype || '').startsWith('audio/');
+      const category = isAudioMime ? 'audio' : fileCategory(file.decodedName);
       const dateDir = dateDirName();
       const dir = ensureArchiveDir(category, dateDir);
       // 记录归档相对路径（相对 UPLOAD_DIR），供下载/预览定位
@@ -165,7 +182,7 @@ function registerRoutes(app, io) {
     const size = Number((req.body && req.body.size) || 0);
     const lastModified = Number((req.body && req.body.lastModified) || 0);
     if (!fileName || size <= 0 || size > MAX_FILE_SIZE) {
-      return res.status(400).json({ ok: false, error: '文件参数无效或超过 200MB 限制' });
+      return res.status(400).json({ ok: false, error: `文件参数无效或超过 ${sizeLimitText()} 限制` });
     }
     const sha256 = String((req.body && req.body.sha256) || '').toLowerCase();
     if (/^[a-f0-9]{64}$/.test(sha256)) {
@@ -206,6 +223,14 @@ function registerRoutes(app, io) {
     const uploadId = String((req.body && req.body.uploadId) || '');
     if (!validUploadId(uploadId)) return res.status(400).json({ ok: false, error: 'uploadId 无效' });
     res.json({ ok: true, uploadId, received: listReceivedChunks(uploadId) });
+  });
+
+  // 取消上传：删除该 uploadId 的临时分片（前端取消/重选时调用；残留分片也会被生命周期定时清理）
+  app.post('/upload/abort', require('express').json({ limit: '1mb' }), (req, res) => {
+    const uploadId = String((req.body && req.body.uploadId) || '');
+    if (!validUploadId(uploadId)) return res.status(400).json({ ok: false, error: 'uploadId 无效' });
+    try { fs.rmSync(path.join(TMP_DIR, uploadId), { recursive: true, force: true }); } catch (_) { /* 忽略 */ }
+    res.json({ ok: true });
   });
 
   // 合并分片 → 按类型/日期归档 → 进入聊天消息流程 → 清理临时分片
@@ -253,9 +278,11 @@ function registerRoutes(app, io) {
         return res.status(400).json({ ok: false, error: `分片不完整：已收 ${received.length}/${totalChunks}` });
       }
 
-      // 原文件名（前端已 encodeURIComponent，这里还原）与类型/日期归档
+      // 原文件名（前端已 encodeURIComponent，这里还原）与类型/日期归档；
+      // 语音消息由前端在 complete 带 audio=1（webm 扩展名默认进 video/，这里显式纠正到 audio/）
       const originalName = originalNameRaw;
-      const category = fileCategory(originalName);
+      const isAudioHint = String((req.body && req.body.audio) || '') === '1';
+      const category = isAudioHint ? 'audio' : fileCategory(originalName);
       const dateDir = dateDirName();
       const archiveDir = ensureArchiveDir(category, dateDir);
 
@@ -350,7 +377,7 @@ function registerRoutes(app, io) {
   app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ ok: false, error: '文件超过 200MB 大小限制' });
+        return res.status(413).json({ ok: false, error: `文件超过 ${sizeLimitText()} 大小限制` });
       }
       return res.status(400).json({ ok: false, error: `上传失败：${err.message}` });
     }

@@ -16,6 +16,7 @@ const CONFIG_DEFS = {
   localAddrs:    { def: '',    type: 'str',   env: 'LOCALSEND_LOCAL_ADDRS',      restart: true },
   fileTtlDays:   { def: 30,    type: 'int',   env: 'LOCALSEND_FILE_TTL_DAYS',    restart: true },
   maxUploadMB:   { def: 2048,  type: 'float', env: 'LOCALSEND_MAX_UPLOAD_MB',    restart: true },
+  maxFileMB:     { def: 2048,  type: 'float', env: 'LOCALSEND_MAX_FILE_MB',      restart: true },
   msgTtlDays:    { def: 0,     type: 'int',   env: 'LOCALSEND_MSG_TTL_DAYS',     restart: true },
   remindTickMs:  { def: 30000, type: 'int',   env: 'LOCALSEND_REMIND_TICK_MS',   restart: true },
   translateUrl:  { def: '',    type: 'str',   env: 'LOCALSEND_TRANSLATE_URL',    restart: false },
@@ -97,7 +98,8 @@ const PORT = cfg.port;
 // 上传根目录可用环境变量/配置文件覆盖（测试用独立目录，避免污染真实 uploads/）
 const UPLOAD_DIR = cfg.uploadDir || path.join(ROOT_DIR, 'uploads');
 const META_FILE = path.join(UPLOAD_DIR, '.meta.json');
-const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+// 单文件大小上限：默认 2GB（分片续传支持；可在配置面板/环境变量 LOCALSEND_MAX_FILE_MB 调整）
+const MAX_FILE_SIZE = Math.round((cfg.maxFileMB || 2048) * 1024 * 1024);
 
 // 断点续传分片大小与临时目录
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB/片
@@ -116,6 +118,14 @@ const IMAGE_MIMES = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.bmp': 'image/bmp'
+};
+
+// 语音/音频类型（按扩展名 + 文件头魔数双重校验；MediaRecorder 产出 webm/ogg/m4a）
+const AUDIO_MIMES = {
+  '.webm': 'audio/webm', '.weba': 'audio/webm',
+  '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+  '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav', '.flac': 'audio/flac', '.aac': 'audio/aac'
 };
 
 // 常见文件类型 → 归档分类目录（按扩展名小写匹配，未匹配的归入 other）
@@ -215,7 +225,7 @@ const TRANSLATE_GTX = cfg.translateGtx;
 module.exports = {
   ROOT_DIR, CONFIG_FILE, CONFIG_DEFS, PORT, currentConfig, writeConfigFile,
   UPLOAD_DIR, META_FILE, MAX_FILE_SIZE, CHUNK_SIZE, TMP_DIR,
-  CERT_DIR, KEY_FILE, CERT_FILE, IMAGE_MIMES, FILE_CATEGORIES,
+  CERT_DIR, KEY_FILE, CERT_FILE, IMAGE_MIMES, AUDIO_MIMES, FILE_CATEGORIES,
   fileCategory, dateDirName, ensureArchiveDir,
   TRANSFER_START_TIMEOUT, OWNER_ACK_TIMEOUT, WRITE_ACK_TIMEOUT,
   WB_MAX_STROKES, WB_MAX_POINTS_PER_STROKE, WB_MAX_TOTAL_POINTS, WB_COLOR_RE, CURSOR_PALETTE,

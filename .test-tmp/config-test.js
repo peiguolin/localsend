@@ -57,6 +57,7 @@ async function main() {
     const cfg = await (await fetch(`${BASE}/api/config`)).json();
     check('读取生效配置成功', cfg.ok && typeof cfg.config === 'object');
     check('配置文件值生效(maxUploadMB=10)', cfg.config.maxUploadMB === 10);
+    check('单文件上限默认 2GB(maxFileMB=2048)', cfg.config.maxFileMB === 2048, JSON.stringify(cfg.config.maxFileMB));
     check('env 覆盖文件值(fileTtlDays=99)', cfg.config.fileTtlDays === 99);
     check('translateUrl=off 生效', cfg.config.translateUrl === 'off');
 
@@ -117,6 +118,12 @@ async function main() {
     check('数据面板含配置卡', html.includes('id="dataConfigBox"'));
     const dp = fs.readFileSync(path.join(__dirname, '..', 'public', 'data-panel.js'), 'utf8');
     check('data-panel 含配置卡逻辑', dp.includes('loadConfigCard') && dp.includes('/api/config'));
+    const up = fs.readFileSync(path.join(__dirname, '..', 'public', 'client-parts', 'upload.js'), 'utf8');
+    check('前端单文件上限已到 2GB', up.includes('2 * 1024 * 1024 * 1024') && up.includes('文件超过 2GB 大小限制'));
+    const srv = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const rtf = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes-files.js'), 'utf8');
+    check('服务端不再硬编码 200MB', !srv.includes('200MB') && !rtf.includes('200MB'));
+    check('页面含语音消息控件', html.includes('id="micBtn"') && html.includes('id="voiceBar"'));
   } finally {
     serverProc.kill();
     for (const s of ['', '-wal', '-shm']) { try { fs.unlinkSync(DB_FILE + s); } catch (_) { /* ignore */ } }

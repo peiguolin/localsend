@@ -6,6 +6,8 @@ const { decorateHistory } = require('./filemeta');
 const { purgeChatLog } = require('./chatlog');
 const { isLocalSocket } = require('./util');
 const { loadRoomPins } = require('./rt-pin');
+const { decorateWithReactions } = require('./rt-reactions');
+const { decorateWithReads } = require('./rt-read');
 
 // ============================================================
 //  群聊房间（自定义房间，独立 room 号，消息按房间路由）
@@ -156,7 +158,7 @@ function register(ioRef, socket) {
       return cb({ ok: false, error: '你不在该房间中' });
     }
     try {
-      const history = decorateHistory(store.loadMessages(200, room));
+      const history = decorateWithReads(decorateWithReactions(decorateHistory(store.loadMessages(200, room)), socket.data.clientId));
       const announcement = store.getAnnouncement(room);
       const pins = loadRoomPins(room);
       cb({ ok: true, room, history, announcement, pins });
@@ -188,6 +190,7 @@ function register(ioRef, socket) {
       store.deleteRoom(roomId);
       try { store.clearPins(roomId); } catch (_) { /* 忽略 */ }
       try { store.deleteAnnouncement(roomId); } catch (_) { /* 忽略 */ }
+      try { store.clearReactionsForRoom(roomId); } catch (_) { /* 忽略 */ }
       // 让所有在线成员离开 socket room
       for (const s of io.sockets.sockets.values()) if (s.rooms && s.rooms.has(roomId)) s.leave(roomId);
       socket.emit('group_disbanded', { room: roomId });
@@ -243,6 +246,7 @@ function register(ioRef, socket) {
       const r = store.clearHistory(roomId, false);
       purgeChatLog(roomId);
       try { store.clearPins(roomId); } catch (_) { /* 置顶随历史一并清除 */ }
+      try { store.clearReactionsForRoom(roomId); } catch (_) { /* 回应随历史一并清除 */ }
       cb({ ok: true, ...r });
       io.to(roomId).emit('room_cleared', { room: roomId, nickname: socket.data.nickname, timestamp: Date.now() });
       io.to(roomId).emit('system_message', {

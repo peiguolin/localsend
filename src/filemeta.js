@@ -2,7 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const store = require('../db.js');
-const { UPLOAD_DIR, META_FILE, IMAGE_MIMES } = require('./config');
+const { UPLOAD_DIR, META_FILE, IMAGE_MIMES, AUDIO_MIMES } = require('./config');
 
 // ---------- 文件元数据持久化（用于下载时还原原始文件名） ----------
 function loadMeta() {
@@ -108,6 +108,49 @@ function detectImageMime(storedName, storedPath) {
   return checkImageMagic(storedPath, ext) ? mime : null;
 }
 
+// ---------- 语音/音频识别（扩展名白名单 + 文件头魔数） ----------
+function checkAudioMagic(storedPath, ext) {
+  try {
+    const fd = fs.openSync(storedPath, 'r');
+    const buf = Buffer.alloc(16);
+    fs.readSync(fd, buf, 0, 16, 0);
+    fs.closeSync(fd);
+    switch (ext) {
+      case '.webm':
+      case '.weba':
+        // EBML 头：1A 45 DF A3（WebM 容器，含音频轨道）
+        return buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3;
+      case '.ogg':
+      case '.opus':
+        return buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53; // "OggS"
+      case '.m4a':
+        // ISO BMFF：前 4 字节长度 + "ftyp" + 品牌 M4A（语音录制常见）
+        return buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70 &&
+               buf[8] === 0x4d && buf[9] === 0x34 && buf[10] === 0x41;
+      case '.mp3':
+        return (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) || // "ID3"
+               (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0);            // MPEG 帧同步
+      case '.wav':
+        return buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45;
+      case '.flac':
+        return buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43; // "fLaC"
+      case '.aac':
+        return buf[0] === 0xff && (buf[1] & 0xf6) === 0xf0; // ADTS 帧同步
+      default:
+        return false;
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
+function detectAudioMime(storedName, storedPath) {
+  const ext = path.extname(storedName).toLowerCase();
+  const mime = AUDIO_MIMES[ext];
+  if (!mime) return null;
+  return checkAudioMagic(storedPath, ext) ? mime : null;
+}
+
 // ---------- 存储文件定位（防路径穿越，供下载/预览共用） ----------
 const STORED_NAME_RE = /^[0-9]+-[a-f0-9]{12}(\.[a-zA-Z0-9]{1,10})?$/;
 
@@ -132,10 +175,20 @@ function resolveStoredFile(raw) {
 }
 
 // 给历史/搜索返回的消息补上文件/图片的下载/预览 URL（DB 只存 storedName，URL 由它推导）
+// 语音消息（type=file + 音频魔数）额外标 audio=true，前端据此渲染内嵌播放器
 function decorateMsgUrls(msg) {
   if (!msg || !msg.storedName) return msg;
   msg.downloadUrl = `/download/${encodeURIComponent(msg.storedName)}`;
   if (msg.type === 'image') msg.imageUrl = `/images/${encodeURIComponent(msg.storedName)}`;
+  if (msg.type === 'file' && !msg.audio) {
+    const ext = path.extname(msg.storedName || '').toLowerCase();
+    if (AUDIO_MIMES[ext]) {
+      try {
+        const resolved = resolveStoredFile(msg.storedName);
+        if (resolved && detectAudioMime(msg.storedName, resolved)) msg.audio = true;
+      } catch (_) { /* 识别失败按普通文件处理 */ }
+    }
+  }
   return msg;
 }
 
@@ -172,7 +225,7 @@ function decorateHistory(msgs) {
 
 module.exports = {
   loadMeta, saveMeta, getOriginalName, deleteMeta, deleteStoredFile, findByHash,
-  checkImageMagic, detectImageMime,
+  checkImageMagic, detectImageMime, checkAudioMagic, detectAudioMime,
   STORED_NAME_RE, resolveStoredFile,
   decorateMsgUrls, restoreStoredNames, decorateHistory
 };

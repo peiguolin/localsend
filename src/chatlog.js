@@ -66,4 +66,11 @@ function parseMentions(text) {
   return Array.from(found);
 }
 
-module.exports = { chatLog, nextMsgId, chatLogPush, chatLogFind, purgeChatLog, purgeChatLogBefore, quoteSnapshot, parseMentions };
+// @全员判定：@所有人 / @all / @everyone（大小写不敏感；@all 需后跟边界防误伤 "call" 等）
+// 注意 @所有人 后不能用 \b（JS 的 \b 对 CJK 无效），改用「非中英文数字」负向断言
+const MENTION_ALL_RE = /@(?:所有人|everyone)(?![\w一-龥])|@all\b/i;
+function hasMentionAll(text) {
+  return MENTION_ALL_RE.test(String(text || ''));
+}
+
+module.exports = { chatLog, nextMsgId, chatLogPush, chatLogFind, purgeChatLog, purgeChatLogBefore, quoteSnapshot, parseMentions, hasMentionAll };

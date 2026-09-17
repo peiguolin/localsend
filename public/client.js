@@ -34,6 +34,7 @@
     require('./client-parts/emoji.js');
     require('./client-parts/autocomplete.js');
     require('./client-parts/upload.js');
+    require('./client-parts/dl-core.js');
   }
 
   // ---------- DOM 引用（壳用；各分片自取自己的 DOM） ----------
@@ -182,7 +183,9 @@
     else if (data.type === 'file') body = '[文件] ' + (data.fileName || '');
     else body = data.text || '';
     try {
-      const n = new Notification(data.mention ? `${data.nickname} 提到了你` : `${data.nickname} 发来消息`, {
+      const title = data.mentionAll ? `${data.nickname} @了所有人`
+        : (data.mention ? `${data.nickname} 提到了你` : `${data.nickname} 发来消息`);
+      const n = new Notification(title, {
         body: body.slice(0, 80),
         icon: drawFavicon(0),
         tag: 'chat-' + data.timestamp
@@ -263,7 +266,7 @@
   // 收到消息后的提醒：@提及时播放专属提示音；滚到上方时累计浮条；未聚焦时累计标签页未读
   function handleIncomingMessage(data) {
     if (app.isOwnMessage(data)) return;
-    const mentioned = (data.mentions || []).includes(state.myNickname);
+    const mentioned = data.mentionAll === true || app.utils.hasMentionAll(data.text) || (data.mentions || []).includes(state.myNickname);
     if (mentioned) playMentionPing();
     // 页内浮条：滚动到上方看历史时来消息 → 提示"新消息 N 条"（无论页面是否聚焦）
     if (!isNearBottom()) {
@@ -334,6 +337,8 @@
     app.renderRoomList();
     // 初始化历史分页状态（welcome 已带最近历史）
     app.initHistoryState(Array.isArray(data.history) ? data.history : []);
+    // 进房即已读：向服务器上报"已读到最新"
+    if (app.markHistoryRead) app.markHistoryRead('main', Array.isArray(data.history) ? data.history : []);
     // 公共房群公告 + 置顶列表（切房时由 room_history 刷新）
     if (data.announcement && data.announcement.text) {
       state.announcement.set('main', { text: data.announcement.text, author: data.announcement.author, updatedAt: data.announcement.updatedAt });

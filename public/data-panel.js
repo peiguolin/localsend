@@ -123,7 +123,7 @@
 
   const CONFIG_LABELS = {
     port: '服务端口', uploadDir: '上传目录', dbFile: '数据库文件', localAddrs: '宿主机地址白名单',
-    fileTtlDays: '文件保留天数', maxUploadMB: 'uploads 容量上限(MB)', msgTtlDays: '消息保留天数',
+    fileTtlDays: '文件保留天数', maxUploadMB: 'uploads 容量上限(MB)', maxFileMB: '单文件大小上限(MB)', msgTtlDays: '消息保留天数',
     remindTickMs: '日程提醒轮询(ms)', translateUrl: '翻译引擎地址(即时生效)', translateGtx: '允许谷歌免费端点回退',
     botEnabled: '启用 AI 机器人', botName: '机器人昵称', botBaseUrl: '接口地址（OpenAI 兼容）',
     botApiKey: 'API Key（只写，不回显）', botModel: '模型名', botPrompt: '系统提示词（可选）',
@@ -134,7 +134,7 @@
   // 按模块分组的配置项
   const CONFIG_GROUPS = [
     { id: 'network',  title: '服务与网络', desc: '服务端口 · 宿主机地址白名单', fields: ['port', 'localAddrs'] },
-    { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'msgTtlDays'] },
+    { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'maxFileMB', 'msgTtlDays'] },
     { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
     { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
