@@ -347,7 +347,8 @@ public/client-parts/     前端功能分片（IIFE，经 window.chatApp 解耦�
   chat-render/social/compose.js (+chat-bus)   消息渲染 / 回应·已读·历史分页 / 发送·右键·流式气泡·草稿
   call-ui/media/session.js (+call-bus)        通话界面 / 媒体设备与 PC 管理 / 信令会话
   rooms.js members.js emoji.js autocomplete.js upload.js dl-core.js share-store.js
-public/share.js          共享面板 + 共享者本地代理（File System Access API，Range 切片）+ 下载管理器（OPFS 续传）
+public/share.js          文件夹共享门面：Node require / 浏览器 script 按序装配下列子片
+  share-bus/downloads/proxy/core/browser.js  共享状态总线 / OPFS 下载管理器 / 共享者本地代理(File System Access+Range) / 列表·创建·句柄恢复·密码 / 目录浏览·上传下载
 public/whiteboard.js     实时白板（Canvas 绘制 + 笔迹广播/重放）
 public/screen-share.js   屏幕共享（getDisplayMedia + P2P 推/拉流）
 public/data-panel.js     数据面板（统计 / 搜索 / 配置卡片 / 用户管理 / 导出 / 清空）
