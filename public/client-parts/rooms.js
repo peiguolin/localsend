@@ -156,6 +156,7 @@
     app.initHistoryState(); // 重置历史分页状态，防串房
     if (app.clearAttachment) app.clearAttachment(); // 切房清掉待发附件，防发错房间
     if (app.restoreDraft) app.restoreDraft(room); // 恢复新房间草稿到输入框
+    if (app.refreshFollowupUI) app.refreshFollowupUI(); // 续聊提示跟随房间
     // 更新房间列表 active
     document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
     if (mobileRoomList) {

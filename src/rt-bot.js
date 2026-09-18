@@ -30,12 +30,40 @@ function loadRoomBotFromDb() {
 // 同房间同一时刻只允许一个生成任务（防连点刷爆 API）
 const generating = new Set();
 
+// 续聊退出词（命中即结束该房间续聊态，不发给模型）
+const FOLLOWUP_EXIT_RE = /^(退出|结束|不用了?|算了|stop|cancel|bye)\.?[。!！]?$/i;
+
 // @提及检测：昵称右侧需为边界（与 chatlog.parseMentions 同规则）
 function mentionsBot(text, name) {
   if (!name) return false;
   const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp('@' + esc + '(?![\\w一-龥-])').test(text || '');
 }
+
+// 续聊窗口判定：某用户在该房间是否处于"可直接续聊"状态（未超时）
+function followupActive(room, clientId) {
+  const f = state.botFollowup.get(room);
+  if (!f || !clientId) return false;
+  if (f.clientId !== clientId) return false;
+  if (Date.now() > f.expireAt) { state.botFollowup.delete(room); return false; }
+  return true;
+}
+
+// 开启/刷新续聊态，并广播给房间供客户端更新输入框提示
+function armFollowup(io, room, clientId, cfg) {
+  const sec = Math.max(0, cfg.botFollowupSec || 0);
+  if (sec <= 0 || !clientId) return;
+  const expireAt = Date.now() + sec * 1000;
+  state.botFollowup.set(room, { clientId, expireAt });
+  io.to(room).emit('bot_followup', { room, active: true, clientId, expireAt, windowSec: sec });
+}
+
+function endFollowup(io, room, broadcast) {
+  if (!state.botFollowup.has(room)) return;
+  state.botFollowup.delete(room);
+  if (broadcast !== false) io.to(room).emit('bot_followup', { room, active: false });
+}
+
 
 // 取房间最近上下文（去掉刚入库的当前消息），拼成 OpenAI 对话消息
 function buildContext(room, socketId, curText, n) {
@@ -174,6 +202,8 @@ function runBotReply(io, opts) {
       store.trimMessages(room);
       io.to(room).emit('bot_done', { tempId, room, id: msg.id });
       io.to(room).emit('chat_message', msg);
+      // 回复成功 → 为发起者开启/刷新续聊窗口（同一人接下来直接发言即可，不必再 @）
+      if (opts.clientId) armFollowup(io, room, opts.clientId, cfg);
     } catch (e) {
       io.to(room).emit('bot_error', { tempId, room, error: e.message || '未知错误' });
     } finally {
@@ -223,10 +253,30 @@ function register(io, socket) {
     const ov = state.roomBotConfig.get(room) || {};
     const enabled = (ov.enabled === null || ov.enabled === undefined) ? cfg.botEnabled : !!ov.enabled;
     if (!enabled) return;
+    const cid = String(socket.data.clientId || '');
+    if (state.botBans.has(cid)) return;
     const text = String((data && data.text) || '').trim();
-    if (!text || !mentionsBot(text, cfg.botName)) return; // 目前仅 @提及触发
-    if (state.botBans.has(String(socket.data.clientId || ''))) return;
-    runBotReply(io, { room, clientId: socket.data.clientId, socketId: socket.id, userContent: text, contextText: text });
+    if (!text) return;
+
+    const mentioned = mentionsBot(text, cfg.botName);
+    // 续聊态：只有当前续聊对象本人命中
+    const inFollowup = followupActive(room, cid);
+    if (!mentioned && !inFollowup) return; // 既没 @ 也不在续聊窗口 → 普通聊天，不理
+    // 退出词：结束续聊态，不当成提问
+    if (inFollowup && !mentioned && FOLLOWUP_EXIT_RE.test(text)) {
+      endFollowup(io, room, true);
+      return;
+    }
+    // @触发时清掉旧窗口（runBotReply 成功后会以本次发起者重开）；续聊命中则保留到回复成功时刷新
+    if (mentioned) state.botFollowup.delete(room);
+    runBotReply(io, { room, clientId: cid, socketId: socket.id, userContent: text, contextText: text });
+  });
+
+  // 主动结束本房间续聊（客户端点 ✕；只允许当前续聊对象本人，避免他人误关）
+  socket.on('bot_followup_end', (data) => {
+    const room = String((data && data.room) || 'main');
+    const f = state.botFollowup.get(room);
+    if (f && f.clientId === String(socket.data.clientId || '')) endFollowup(io, room, true);
   });
 
   // 查询/设置某房间的机器人覆盖（宿主机或该房间房主）：enabled 三态（null=继承/true/false）、prompt（留空=继承）

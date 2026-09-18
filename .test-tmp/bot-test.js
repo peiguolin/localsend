@@ -156,11 +156,17 @@ async function main() {
     const last = llmReq.body.messages[llmReq.body.messages.length - 1];
     check('末条 user 含 @机器人 原文', last.role === 'user' && last.content.includes('你好 @机器人'));
 
-    // 无@不触发
+    // 无 @ 不触发：B 刚 @ 过处于续聊窗口，改用未在续聊的 A 发普通消息。
+    // 以"假 LLM 是否被再次调用"为唯一判据（监听 bot_start，比 chat_message 更准，
+    // 不会被上一条机器人回复的迟到广播干扰）。
     llmReq = null;
-    B.s.emit('chat_message', { text: '这是普通消息', room: 'main', clientId: 'cB' });
-    const quiet = await expectNoBotReply(B.s);
-    check('无 @提及 不触发机器人', quiet);
+    let started = false;
+    const onStart = () => { started = true; };
+    A.s.on('bot_start', onStart);
+    A.s.emit('chat_message', { text: '这是普通消息', room: 'main', clientId: 'cA' });
+    await sleep(700);
+    A.s.off('bot_start', onStart);
+    check('无 @提及 不触发机器人（非续聊用户）', !started);
     check('假 LLM 未被再次调用', llmReq === null);
   } catch (e) {
     check('测试流程无异常', false, String(e && e.message));

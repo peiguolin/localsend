@@ -33,5 +33,9 @@ module.exports = {
   roomBotConfig: new Map(),
 
   // 发言限流（内存态）：clientId -> { times: number[], strikes: number, lastStrikeAt: number }
-  rateHits: new Map()
+  rateHits: new Map(),
+
+  // 机器人续聊窗口（内存态）：roomId -> { clientId, expireAt }
+  // 某次 @机器人 成功后，同一用户在窗口内发普通消息（不必再 @）即继续对话；超时/退出词结束
+  botFollowup: new Map()
 };

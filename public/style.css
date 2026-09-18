@@ -3911,3 +3911,24 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
   word-break: break-word;
   max-width: 320px;
 }
+
+/* ===== 机器人续聊提示条 ===== */
+.bot-followup-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  font-size: 12.5px;
+  color: var(--accent);
+}
+.bot-followup-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bot-followup-x {
+  border: none; background: transparent; color: var(--accent);
+  cursor: pointer; font-size: 12px; flex-shrink: 0; padding: 2px 6px; border-radius: 6px;
+}
+.bot-followup-x:hover { background: var(--accent); color: #fff; }

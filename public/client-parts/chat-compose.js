@@ -14,6 +14,58 @@
   const sendBtn = document.getElementById('sendBtn');
   const quotePreview = document.getElementById('quotePreview');
 
+  // ---------- 机器人续聊窗口（同一人 @ 后一段时间内直接发言即可，不必再 @） ----------
+  const followupBar = document.getElementById('botFollowupBar');
+  const followupText = document.getElementById('botFollowupText');
+  const followupEnd = document.getElementById('botFollowupEnd');
+  // room -> { clientId, expireAt, timer }（客户端只关心当前房间的提示与自动消失）
+  const followupState = new Map();
+  const DEFAULT_PLACEHOLDER = '输入消息，Enter 发送';
+
+  function clearFollowupTimer(room) {
+    const f = followupState.get(room);
+    if (f && f.timer) { clearTimeout(f.timer); }
+  }
+
+  function setFollowupUI() {
+    const room = state.currentRoom;
+    const f = followupState.get(room);
+    const mine = f && f.clientId === state.myClientId && Date.now() <= f.expireAt;
+    if (mine) {
+      if (followupBar) followupBar.hidden = false;
+      if (followupText) followupText.textContent = `正在和机器人对话，直接发送即可（${Math.max(1, Math.round((f.expireAt - Date.now()) / 1000))}s）`;
+      msgInput.placeholder = '继续对机器人说…（直接发送，结束发“退出”）';
+    } else {
+      if (followupBar) followupBar.hidden = true;
+      msgInput.placeholder = DEFAULT_PLACEHOLDER;
+    }
+  }
+
+  socket.on('bot_followup', (data) => {
+    const room = (data && data.room) || 'main';
+    clearFollowupTimer(room);
+    if (!data || !data.active) {
+      followupState.delete(room);
+    } else {
+      const expireAt = data.expireAt || (Date.now() + (data.windowSec || 60) * 1000);
+      const timer = setTimeout(() => { followupState.delete(room); setFollowupUI(); }, Math.max(0, expireAt - Date.now()) + 50);
+      followupState.set(room, { clientId: data.clientId, expireAt, timer });
+    }
+    if (room === state.currentRoom) setFollowupUI();
+  });
+
+  if (followupEnd) {
+    followupEnd.addEventListener('click', () => {
+      socket.emit('bot_followup_end', { room: state.currentRoom });
+      clearFollowupTimer(state.currentRoom);
+      followupState.delete(state.currentRoom);
+      setFollowupUI();
+    });
+  }
+
+  // 切房时刷新续聊提示（由 rooms 片切房后调用）
+  app.refreshFollowupUI = setFollowupUI;
+
   // ---------- 接收聊天消息 ----------
   socket.on('chat_message', (data) => {
     if (data.id) state.msgStore.set(data.id, data);
