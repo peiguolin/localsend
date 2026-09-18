@@ -82,6 +82,40 @@
     }
   });
 
+  // ---------- 房间草稿（按房间存 localStorage；切房/刷新后未发送文字仍在） ----------
+  const DRAFT_KEY = 'localsend-drafts';
+
+  function readDrafts() {
+    try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}') || {}; } catch (_) { return {}; }
+  }
+  function writeDrafts(d) {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch (_) { /* 配额/隐私模式忽略 */ }
+  }
+  // 保存某房间草稿（空则删除该键，避免堆积）
+  function saveDraft(room, text) {
+    const roomId = String(room == null ? state.currentRoom : room);
+    const d = readDrafts();
+    const v = String(text == null ? msgInput.value : text);
+    if (v.trim()) d[roomId] = v;
+    else delete d[roomId];
+    writeDrafts(d);
+  }
+  // 切房前：存旧房间草稿；切房后：把新房间草稿填入输入框
+  function saveCurrentDraft() { saveDraft(state.currentRoom, msgInput.value); }
+  function restoreDraft(room) {
+    const d = readDrafts();
+    msgInput.value = d[String(room == null ? state.currentRoom : room)] || '';
+  }
+  function clearDraft(room) {
+    const roomId = String(room == null ? state.currentRoom : room);
+    const d = readDrafts();
+    if (roomId in d) { delete d[roomId]; writeDrafts(d); }
+  }
+  // 输入即存（含表情插入、@补全等程序化改值后也可手动 saveCurrentDraft）
+  msgInput.addEventListener('input', () => saveDraft(state.currentRoom, msgInput.value));
+  // 首屏恢复默认房间（公共房）草稿——刷新后未发送的文字仍在
+  restoreDraft('main');
+
   // ---------- 发送聊天消息 ----------
   function sendMessage() {
     app.closeEmojiPanel();
@@ -91,6 +125,7 @@
       app.sendAttachment(text);
       msgInput.value = '';
       clearQuote();
+      clearDraft();
       app.closeAutocomplete();
       msgInput.focus();
       app.scrollToBottom(true);
@@ -101,6 +136,7 @@
     socket.emit('chat_message', { text, quoteId: state.quoting ? state.quoting.id : undefined, clientId: state.myClientId, room: state.currentRoom });
     msgInput.value = '';
     clearQuote();
+    clearDraft();
     app.closeAutocomplete();
     msgInput.focus();
     app.scrollToBottom(true);
@@ -338,6 +374,7 @@
   });
 
   Object.assign(app, {
-    clearQuote, canManageRoom, pinMessage, unpinMessage
+    clearQuote, canManageRoom, pinMessage, unpinMessage,
+    saveCurrentDraft, restoreDraft, clearDraft
   });
 })();

@@ -148,12 +148,14 @@
   // 切换房间：清空聊天区 → 加载该房间历史 → 更新标题/输入区/房间列表
   function switchRoom(room) {
     if (room === state.currentRoom) return;
+    if (app.saveCurrentDraft) app.saveCurrentDraft(); // 先存旧房间未发送的草稿
     state.currentRoom = room;
     state.roomUnread.set(room, 0);
     chatArea.innerHTML = '';
     state.msgStore.clear();
     app.initHistoryState(); // 重置历史分页状态，防串房
     if (app.clearAttachment) app.clearAttachment(); // 切房清掉待发附件，防发错房间
+    if (app.restoreDraft) app.restoreDraft(room); // 恢复新房间草稿到输入框
     // 更新房间列表 active
     document.querySelectorAll('.room-item').forEach((el) => el.classList.toggle('active', el.dataset.room === room));
     if (mobileRoomList) {
