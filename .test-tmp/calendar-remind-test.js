@@ -145,10 +145,12 @@ async function main() {
     const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
     check('今日横幅元素存在', html.includes('id="todayBanner"'));
     check('提醒档位选择器存在', html.includes('id="calEvRemind"'));
-    // callTargets 在 call 分片导出（client.js 为壳，负责装配）
-    const call = fs.readFileSync(path.join(pub, 'client-parts', 'call.js'), 'utf8');
+    // callTargets 在 call-session 子片导出（call.js 为门面，负责装配）
+    const callSession = fs.readFileSync(path.join(pub, 'client-parts', 'call-session.js'), 'utf8');
+    const callFacade = fs.readFileSync(path.join(pub, 'client-parts', 'call.js'), 'utf8');
     const shell = fs.readFileSync(path.join(pub, 'client.js'), 'utf8');
-    check('call 分片暴露 callTargets', call.includes('callTargets'));
+    check('call 会话片暴露 callTargets', callSession.includes('callTargets'));
+    check('call 门面装配子片', callFacade.includes("require('./call-session.js')"));
     check('client.js 装配 call 分片', shell.includes("require('./client-parts/call.js')"));
 
     a.disconnect(); b.disconnect(); c.disconnect();
