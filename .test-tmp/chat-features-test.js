@@ -169,14 +169,20 @@ async function main() {
     check('highlight.js 已 vendor', fs.existsSync(vendor) && fs.statSync(vendor).size > 100000);
     const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
     check('页面加载 highlight.js 与引用预览条', html.includes('vendor/highlight.min.js') && html.includes('id="quotePreview"'));
-    // 撤回/代码复制在 chat 分片、@补全在 autocomplete 分片（client.js 为壳，负责装配各分片）
-    const chat = fs.readFileSync(path.join(pub, 'client-parts', 'chat.js'), 'utf8');
-    const ac = fs.readFileSync(path.join(pub, 'client-parts', 'autocomplete.js'), 'utf8');
-    const shell = fs.readFileSync(path.join(pub, 'client.js'), 'utf8');
-    check('chat 分片含撤回/代码复制逻辑',
-      chat.includes('chat_recall') && chat.includes('code-copy'));
+    // chat 已拆为门面 chat.js + chat-render/social/compose 子片；撤回/代码复制在 compose，
+    // @全员高亮在 render，@补全在 autocomplete；门面负责在 Node 下装配子片
+    const read = (f) => fs.readFileSync(path.join(pub, 'client-parts', f), 'utf8');
+    const chatFacade = read('chat.js');
+    const chatCompose = read('chat-compose.js');
+    const chatRender = read('chat-render.js');
+    const ac = read('autocomplete.js');
+    const shell = read('../client.js');
+    check('chat 子片含撤回/代码复制逻辑',
+      chatCompose.includes('chat_recall') && chatCompose.includes('code-copy'));
     check('autocomplete 分片含补全逻辑', ac.includes('ac-box'));
-    check('chat 分片含 @全员高亮逻辑', chat.includes('mention-all') && chat.includes('hasMentionAll'));
+    check('chat 渲染片含 @全员高亮逻辑', chatRender.includes('mention-all') && chatRender.includes('hasMentionAll'));
+    check('chat 门面装配了各子片',
+      chatFacade.includes("require('./chat-render.js')") && chatFacade.includes("require('./chat-compose.js')"));
     check('client.js 装配了各功能分片',
       shell.includes("require('./client-parts/chat.js')") && shell.includes("require('./client-parts/autocomplete.js')"));
 
