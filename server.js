@@ -37,6 +37,10 @@ const app = express();
 const server = https.createServer(loadCredentials(), app);
 const io = new Server(server);
 
+// 安全响应头 + CSP（在所有路由/静态资源之前）
+const { securityHeaders, installProcessGuards } = require('./src/guard');
+app.use(securityHeaders);
+
 // ---------- 静态资源 ----------
 app.use(express.static(path.join(ROOT_DIR, 'public')));
 
@@ -265,3 +269,6 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// 进程级错误兜底：未捕获 rejection 仅记录；未捕获同步异常记录后走优雅退出
+installProcessGuards((reason) => shutdown(reason || 'fatal'));
