@@ -64,4 +64,46 @@ function installProcessGuards(onFatal) {
   });
 }
 
-module.exports = { securityHeaders, installProcessGuards, CSP };
+// ---------- Socket 事件频率闸（按连接；只丢弃超限包，不踢人） ----------
+// 白板笔迹/光标本就是高频且内容已钳制（cursor 还有 15ms 节流），ICE 在建连时会成批到达——
+// 这些豁免；其余"动作类"事件用宽松的滑动窗口挡住异常洪泛/刷接口，阈值远高于正常人手操作。
+const SOCKET_TIER = {
+  // 豁免：高频实时流，不在此限（各自有内容钳制/节流）
+  exempt: new Set([
+    'wb_pts', 'wb_cursor', 'rtc_ice', 'ss_ice'
+  ]),
+  // 严格档：管理/通话控制等低频且代价高的动作
+  strict: new Set([
+    'admin_kick', 'admin_mute', 'admin_unban', 'admin_botban', 'admin_users', 'admin_audit',
+    'lifecycle_sweep', 'room_history_clear', 'history_clear',
+    'call_user', 'call_accept', 'call_reject', 'call_end',
+    'group_create', 'ss_start', 'share_register'
+  ])
+};
+// 每窗口允许的事件数；窗口毫秒
+const LIMITS = { normal: 40, strict: 12, windowMs: 1000 };
+
+// 返回一个可挂到 io.on('connection') 里 socket.use((pkt,next)=>...) 的中间件
+function socketRateLimiter() {
+  // event -> 时间戳数组（挂在闭包，随连接一起回收）
+  const hits = new Map();
+  return function rateLimitMiddleware(packet, next) {
+    const evt = Array.isArray(packet) ? packet[0] : packet && packet[0];
+    if (!evt || SOCKET_TIER.exempt.has(evt)) return next();
+    const strict = SOCKET_TIER.strict.has(evt);
+    const limit = strict ? LIMITS.strict : LIMITS.normal;
+    const now = Date.now();
+    let arr = hits.get(evt);
+    if (!arr) { arr = []; hits.set(evt, arr); }
+    while (arr.length && now - arr[0] > LIMITS.windowMs) arr.shift();
+    if (arr.length >= limit) {
+      // 超窗：静默丢弃（不 next()），避免异常客户端刷 CPU/广播/落库
+      return;
+    }
+    arr.push(now);
+    return next();
+  };
+}
+
+module.exports = { securityHeaders, installProcessGuards, socketRateLimiter, CSP };
+

@@ -15,7 +15,7 @@ function check(name, cond, extra) {
 }
 
 // ---------- 1) 中间件纯单测 ----------
-const { securityHeaders, CSP, installProcessGuards } = require(path.join(__dirname, '..', 'src', 'guard.js'));
+const { securityHeaders, CSP, installProcessGuards, socketRateLimiter } = require(path.join(__dirname, '..', 'src', 'guard.js'));
 const headers = {};
 securityHeaders({}, { setHeader: (k, v) => { headers[k] = v; }, }, () => {});
 console.log('【安全头中间件】');
@@ -28,6 +28,37 @@ check('X-Frame-Options=DENY', headers['X-Frame-Options'] === 'DENY');
 check('Referrer-Policy=no-referrer', headers['Referrer-Policy'] === 'no-referrer');
 check('Permissions-Policy 限制摄像头/麦克风为 self', /camera=\(self\)/.test(headers['Permissions-Policy'] || ''));
 check('installProcessGuards 是函数', typeof installProcessGuards === 'function');
+
+// ---------- 1b) socket 事件频率闸（纯中间件） ----------
+console.log('【socket 频率闸】');
+{
+  const mw = socketRateLimiter();
+  let passed = 0;
+  const next = () => { passed++; };
+  // 普通档：前 40 个放行
+  for (let i = 0; i < 40; i++) mw(['message_reaction', {}], next);
+  check('普通事件窗口内 40 个全放行', passed === 40, 'passed=' + passed);
+  mw(['message_reaction', {}], next);
+  check('第 41 个普通事件被丢弃', passed === 40, 'passed=' + passed);
+
+  // 豁免事件：连发 500 个 wb_pts 全放行
+  const mw2 = socketRateLimiter();
+  let p2 = 0;
+  for (let i = 0; i < 500; i++) mw2(['wb_pts', {}], () => p2++);
+  check('白板笔迹（豁免）高频不限', p2 === 500, 'passed=' + p2);
+
+  // 严格档：第 13 个 call_user 被丢
+  const mw3 = socketRateLimiter();
+  let p3 = 0;
+  for (let i = 0; i < 13; i++) mw3(['call_user', {}], () => p3++);
+  check('严格档（通话控制）阈值更低（12）', p3 === 12, 'passed=' + p3);
+
+  // 不同事件各自计数，不互相影响
+  const mw4 = socketRateLimiter();
+  let p4 = 0;
+  for (let i = 0; i < 40; i++) { mw4(['message_reaction', {}], () => p4++); mw4(['read_messages', {}], () => p4++); }
+  check('不同事件独立计数', p4 === 80, 'passed=' + p4);
+}
 
 // ---------- 3) unhandledRejection 不应使进程退出（隔离子进程，避免污染本测试进程） ----------
 console.log('【进程兜底】');

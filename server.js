@@ -38,7 +38,7 @@ const server = https.createServer(loadCredentials(), app);
 const io = new Server(server);
 
 // 安全响应头 + CSP（在所有路由/静态资源之前）
-const { securityHeaders, installProcessGuards } = require('./src/guard');
+const { securityHeaders, installProcessGuards, socketRateLimiter } = require('./src/guard');
 app.use(securityHeaders);
 
 // ---------- 静态资源 ----------
@@ -53,6 +53,9 @@ rtConfig.registerRoutes(app);
 
 // ---------- Socket.IO 连接编排 ----------
 io.on('connection', (socket) => {
+  // 按连接的事件频率闸（丢弃超限包；白板笔迹/光标/ICE 等高频流豁免）
+  socket.use(socketRateLimiter());
+
   socket.data.nickname = randomNickname();
   socket.data.lastRenameAt = 0;
   socket.data.lastCursorRelay = 0;
