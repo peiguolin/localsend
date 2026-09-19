@@ -78,6 +78,42 @@ function registerRoutes(app) {
     res.setHeader('Set-Cookie', 'ls_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
     res.json({ ok: true });
   });
+
+  // 本人改密：凭「用户名 + 旧密码」证明身份（无需登录会话），成功后吊销该账号全部会话
+  // 公开路由（已在 authMiddleware 白名单）；独立按 IP 限流防爆破
+  app.post('/api/password/change', require('express').json({ limit: '16kb' }), (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const ip = auth.clientIp(req);
+    if (PUBLIC_MODE !== 'invite') {
+      return res.status(403).json({ ok: false, error: '当前未开启邀请模式' });
+    }
+    if (!rateGate(ip, 'pwdchange', 5, 60000)) {
+      return res.status(429).json({ ok: false, error: '操作过于频繁，请稍后再试' });
+    }
+    const r = auth.changePassword(body.username, body.oldPassword, body.newPassword);
+    if (!r.ok) return res.status(400).json(r);
+    try {
+      insertAudit({ actor: String(body.username || ''), action: 'change_password', target: String(body.username || ''), detail: `IP: ${ip}` });
+    } catch (_) { /* 审计失败不阻塞 */ }
+    res.json({ ok: true, message: '密码已修改，请用新密码重新登录' });
+  });
+
+  // 管理员重置密码：role='admin' 的登录账号（远程）或宿主机直连可执行；被重置账号会话全部吊销
+  app.post('/api/password/reset', require('express').json({ limit: '16kb' }), (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const ip = auth.clientIp(req);
+    const session = auth.extractToken(req) ? auth.validateSession(auth.extractToken(req)) : null;
+    const isAdminUser = !!(session && session.role === 'admin');
+    if (!auth.isDirectLocalReq(req) && !isAdminUser) {
+      return res.status(403).json({ ok: false, error: '仅管理员可重置密码' });
+    }
+    const r = auth.resetPassword(body.username, body.newPassword);
+    if (!r.ok) return res.status(400).json(r);
+    try {
+      insertAudit({ actor: (session && session.username) || '宿主机', action: 'reset_password', target: String(body.username || ''), detail: `IP: ${ip}` });
+    } catch (_) { /* 审计失败不阻塞 */ }
+    res.json({ ok: true, message: `已重置「${r.username}」的密码` });
+  });
 }
 
 module.exports = { registerRoutes };

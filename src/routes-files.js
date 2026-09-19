@@ -49,7 +49,7 @@ function registerRoutes(app, io) {
   function publishUploadMessage({ storedName, originalName, actualSize, nickname, clientId, room, caption }) {
     const downloadUrl = `/download/${encodeURIComponent(storedName)}`;
     const captionText = String(caption || '').trim().slice(0, 5000);
-    const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size: actualSize, downloadUrl, timestamp: Date.now(), ...(captionText ? { text: captionText, mentions: parseMentions(captionText) } : {}) };
+    const base = { id: nextMsgId(), nickname, clientId, room, fileName: originalName, storedName, size: actualSize, fileSize: actualSize, downloadUrl, timestamp: Date.now(), ...(captionText ? { text: captionText, mentions: parseMentions(captionText) } : {}) };
     const resolved = resolveStoredFile(storedName);
     const mime = resolved ? detectImageMime(storedName, resolved) : null;
     if (mime) {
@@ -103,7 +103,8 @@ function registerRoutes(app, io) {
 
   const upload = multer({
     storage,
-    limits: { fileSize: MAX_FILE_SIZE }
+    // 字段数/字段体量上限：收窄 multer 解析攻击面（GHSA-wc9g-mqfw-jrwm 等公告暂无修复版）
+    limits: { fileSize: MAX_FILE_SIZE, fields: 10, fieldSize: 64 * 1024, files: 1, parts: 20 }
   });
 
   // POST /upload —— 单文件上传（秒传：内容 sha256 命中已有文件则复用，不落第二份）
@@ -162,7 +163,7 @@ function registerRoutes(app, io) {
   //  uploadId 由「文件名+大小+lastModified」哈希生成，同一文件再次上传自动续传
   // ============================================================
 
-  const chunkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: CHUNK_SIZE + 64 * 1024 } });
+  const chunkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: CHUNK_SIZE + 64 * 1024, fields: 10, fieldSize: 64 * 1024, files: 1, parts: 20 } });
 
   // fileKey：同一文件（同名+同大小+同修改时间）幂等标识
   function uploadFileKey(fileName, size, lastModified) {
@@ -254,7 +255,7 @@ function registerRoutes(app, io) {
 
   // 合并分片 → 按类型/日期归档 → 进入聊天消息流程 → 清理临时分片
   // 秒传：init 返回 dedup 时前端直接走本接口的 dedup 分支（无分片、零流量复用已有文件）
-  app.post('/upload/complete', multer().none(), (req, res) => {
+  app.post('/upload/complete', multer({ limits: { fields: 10, fieldSize: 64 * 1024, parts: 20 } }).none(), (req, res) => {
     // ---------- 秒传分支：复用已存在的内容相同文件 ----------
     if (req.body && req.body.dedup) {
       const storedName = String((req.body && req.body.storedName) || '');

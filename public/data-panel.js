@@ -417,7 +417,8 @@
     mute: '禁言', unmute: '解除禁言',
     botban: '禁机器人', unbotban: '恢复机器人',
     config: '修改配置',
-    grant_admin: '授予管理员', revoke_admin: '收回管理员'
+    grant_admin: '授予管理员', revoke_admin: '收回管理员',
+    change_password: '修改密码', reset_password: '重置密码'
   };
 
   function fmtAuditTime(ts) {
@@ -633,15 +634,30 @@
         for (const u of accs) {
           const row = document.createElement('div');
           row.className = 'user-row';
+          const used = Number(u.usedBytes || 0);
+          const quotaMB = Number((currentCfg && currentCfg.perUserUploadMB) || 0);
+          const usage = quotaMB > 0
+            ? `${(used / 1048576).toFixed(1)}/${quotaMB}MB`
+            : (used > 0 ? `${(used / 1048576).toFixed(1)}MB` : '');
           const info = document.createElement('div');
           info.className = 'user-info';
           info.innerHTML =
             `<span class="user-nick">${escapeHtml(u.username)}</span>` +
             (u.role === 'admin' ? '<span class="user-badge local">管理员</span>' : '') +
             (u.banned ? '<span class="user-badge banned">已封禁</span>' : '') +
+            (usage ? `<span class="user-badge">已用 ${escapeHtml(usage)}</span>` : '') +
             `<span class="user-cid">${escapeHtml(u.nickname || '')}</span>`;
           const actions = document.createElement('div');
           actions.className = 'user-actions';
+          actions.appendChild(actionBtn('重置密码', () => {
+            const np = prompt(`为「${u.username}」设置新密码（至少 6 位）：`, '');
+            if (!np || np.length < 6) { inviteTip('新密码至少 6 位', false); return; }
+            if (!confirm(`确认将「${u.username}」的密码重置为刚输入的密码？\n其所有登录会话将立即失效。`)) return;
+            socket.emit('admin_reset_password', { username: u.username, newPassword: np }, (r7) => {
+              if (r7 && r7.ok) { inviteTip(r7.message || '已重置', true); renderInvites(); }
+              else { inviteTip((r7 && r7.error) || '重置失败', false); }
+            });
+          }));
           if (u.role === 'admin') {
             actions.appendChild(actionBtn('取消管理员', () => {
               if (!confirm(`收回「${u.username}」的管理员权限？\n其当前会话将立即失效，需重新登录。`)) return;

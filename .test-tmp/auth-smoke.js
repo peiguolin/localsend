@@ -3,7 +3,8 @@
  *   未审批登录失败 / 无会话连接被拒 / 申请列表(带IP) / 审批通过 / 登录 / 带会话连接 /
  *   HTTP 门禁(401/放行) / 封禁后重连被拒 / 同 IP 注册上限 / 拒绝申请 / 登出 /
  *   XFF 末段防伪造(同 IP 上限按末段计数) / 管理员账号(授权→远程读改配置→socket 免口令管理→降权吊销会话) /
- *   每人上传配额(超限拒绝/放行)。
+ *   每人上传配额(超限拒绝/放行) / 改密(旧密码→吊销会话→新密码登录) / 管理员重置(宿主机+远程管理员) /
+ *   配额可视化(账号列表带已用字节)。
  * 实例B（invite 模式，模拟远程）：LOCAL_ADDRS 不含本机 → 管理操作被拒 / admin_login 口令校验。
  * 实例C（off 模式回归）：匿名连接不受影响，/api/auth/status 返回 mode:'off'。 */
 'use strict';
@@ -288,6 +289,9 @@ async function main() {
     check('上传超配额被拒', r.status === 403 && /配额/.test((r.body && r.body.error) || ''));
     r = await uploadFile(BASE_A, { token: token2, xff: '203.0.113.9', clientId: carolUserId, nickname: '小C', name: 'small.txt', size: 5 * 1024 });
     check('配额内上传成功', r.status === 200 && r.body.ok === true);
+    // 单文件未超配额但累计超限（已用 5KB + 本次 50KB > 52KB）→ 证明按累计字节计数
+    r = await uploadFile(BASE_A, { token: token2, xff: '203.0.113.9', clientId: carolUserId, nickname: '小C', name: 'cum.txt', size: 50 * 1024 });
+    check('累计超配额被拒（单文件未超）', r.status === 403 && /配额/.test((r.body && r.body.error) || ''));
 
     // 24. 收回管理员：会话被吊销 → 配置接口立即失效
     inv = await socketEmit(adminS.s, 'admin_set_role', { username: 'carol', role: 'user' });
@@ -296,6 +300,50 @@ async function main() {
     check('降权后旧会话立即失效（配置 401）', r.status === 401);
     r = await api(BASE_A, '/api/auth/status', { headers: { authorization: `Bearer ${token2}` } });
     check('降权后旧会话已吊销（status authed=false）', r.body.authed === false);
+
+    // 25. 改密 / 管理员重置：dave 走完整链路
+    inv = await socketEmit(adminS.s, 'admin_applications', {});
+    const daveApp = inv.applications.find((a) => a.username === 'dave');
+    inv = await socketEmit(adminS.s, 'admin_approve', { id: daveApp.id });
+    check('审批 dave 生成账号', inv.ok === true);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'secret123' }) });
+    check('dave 登录成功', r.status === 200 && r.body.token);
+    const tokenD1 = r.body.token;
+    r = await api(BASE_A, '/api/password/change', { method: 'POST', headers: remoteHdr, body: JSON.stringify({ username: 'dave', oldPassword: 'secret123', newPassword: 'newsecret456' }) });
+    check('本人改密成功（凭旧密码）', r.status === 200 && r.body.ok === true);
+    r = await api(BASE_A, '/api/auth/status', { headers: { authorization: `Bearer ${tokenD1}` } });
+    check('改密后旧会话全部吊销', r.body.authed === false);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'secret123' }) });
+    check('旧密码登录被拒', r.status === 401);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'newsecret456' }) });
+    check('新密码登录成功', r.status === 200 && r.body.token);
+    // 管理员重置（宿主机直连）：被重置账号会话全部失效
+    r = await api(BASE_A, '/api/password/reset', { method: 'POST', body: JSON.stringify({ username: 'dave', newPassword: 'resetpass789' }) });
+    check('宿主机可重置密码', r.status === 200 && r.body.ok === true);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'resetpass789' }) });
+    check('重置后的新密码可登录', r.status === 200 && r.body.token);
+    // 管理员账号远程重置：重新授予 carol 管理员 → 远程重置 dave
+    inv = await socketEmit(adminS.s, 'admin_set_role', { username: 'carol', role: 'admin' });
+    check('重新授予 carol 管理员', inv.ok === true);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'carol', password: 'secret123' }) });
+    const tokenC2 = r.status === 200 ? r.body.token : '';
+    r = await api(BASE_A, '/api/password/reset', { method: 'POST', headers: { ...remoteHdr, authorization: `Bearer ${tokenC2}` }, body: JSON.stringify({ username: 'dave', newPassword: 'adminreset1' }) });
+    check('管理员账号远程重置密码', r.status === 200 && r.body.ok === true);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'adminreset1' }) });
+    check('远程重置后的新密码可登录', r.status === 200 && r.body.token);
+    // 非管理员远程重置被拒（无会话→门禁 401；带普通账号会话→403）
+    r = await api(BASE_A, '/api/password/reset', { method: 'POST', headers: remoteHdr, body: JSON.stringify({ username: 'dave', newPassword: 'hack12345' }) });
+    check('非管理员远程重置被拒', r.status === 401 || r.status === 403);
+    // socket 版重置（口令型/宿主/账号管理员共用通道）
+    inv = await socketEmit(adminS.s, 'admin_reset_password', { username: 'dave', newPassword: 'socketreset2' });
+    check('socket 版重置密码', inv.ok === true);
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'socketreset2' }) });
+    check('socket 重置后新密码可登录', r.status === 200 && r.body.token);
+
+    // 26. 配额可视化：admin_accounts 带每人已用字节（carol 之前传过 5KB）
+    inv = await socketEmit(adminS.s, 'admin_accounts', {});
+    check('账号列表带已用字节', inv.ok === true && inv.users.every((u) => typeof u.usedBytes === 'number'));
+    check('配额可视化：carol 已用 > 0', inv.users.some((u) => u.username === 'carol' && u.usedBytes > 0));
 
     adminS.s.close();
     aliceS.s.close();

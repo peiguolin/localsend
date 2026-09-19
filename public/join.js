@@ -27,24 +27,34 @@
 
   const tabLogin = document.getElementById('tabLogin');
   const tabApply = document.getElementById('tabApply');
+  const tabChange = document.getElementById('tabChange');
   const loginForm = document.getElementById('loginForm');
   const applyForm = document.getElementById('applyForm');
+  const changeForm = document.getElementById('changeForm');
   const loginMsg = document.getElementById('loginMsg');
   const applyMsg = document.getElementById('applyMsg');
+  const changeMsg = document.getElementById('changeMsg');
   const loginBtn = document.getElementById('loginBtn');
   const applyBtn = document.getElementById('applyBtn');
+  const changeBtn = document.getElementById('changeBtn');
 
   function showTab(which) {
     const login = which === 'login';
+    const apply = which === 'apply';
+    const change = which === 'change';
     tabLogin.classList.toggle('active', login);
-    tabApply.classList.toggle('active', !login);
+    tabApply.classList.toggle('active', apply);
+    tabChange.classList.toggle('active', change);
     loginForm.hidden = !login;
-    applyForm.hidden = login;
+    applyForm.hidden = !apply;
+    changeForm.hidden = !change;
     loginMsg.className = 'auth-msg';
     applyMsg.className = 'auth-msg';
+    changeMsg.className = 'auth-msg';
   }
   tabLogin.addEventListener('click', () => showTab('login'));
   tabApply.addEventListener('click', () => showTab('apply'));
+  tabChange.addEventListener('click', () => showTab('change'));
 
   // 初始状态：非邀请模式 → 回首页；已登录 → 回首页
   fetch('/api/auth/status').then((r) => r.json()).then((s) => {
@@ -87,6 +97,30 @@
       setTimeout(() => showTab('login'), 1200);
     } else {
       setMsg(applyMsg, (r.body && r.body.error) || '提交失败');
+    }
+  });
+
+  changeForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const np = changeNew.value;
+    if (np !== changeNew2.value) {
+      setMsg(changeMsg, '两次输入的新密码不一致');
+      return;
+    }
+    changeBtn.disabled = true;
+    changeMsg.className = 'auth-msg';
+    const r = await post('/api/password/change', {
+      username: changeUser.value.trim(),
+      oldPassword: changeOld.value,
+      newPassword: np
+    }).catch(() => ({ status: 0, body: { error: '网络错误，请重试' } }));
+    changeBtn.disabled = false;
+    if (r.status === 200 && r.body && r.body.ok) {
+      setMsg(changeMsg, r.body.message || '密码已修改', true);
+      changeForm.reset();
+      setTimeout(() => showTab('login'), 1500);
+    } else {
+      setMsg(changeMsg, (r.body && r.body.error) || '修改失败');
     }
   });
 })();

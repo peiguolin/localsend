@@ -821,6 +821,12 @@ function setUserRole(username, role) {
   return r.changes > 0;
 }
 
+// 更新账号密码（scrypt 哈希由上层生成）
+function setUserPassword(id, passHash) {
+  const d = getDb();
+  d.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(String(passHash || ''), String(id || ''));
+}
+
 function touchUser(id, ip) {
   const d = getDb();
   d.prepare('UPDATE users SET last_ip = ?, last_seen = ? WHERE id = ?')
@@ -996,7 +1002,7 @@ module.exports = {
   listPins, addPin, removePin, clearPins,
   setAnnouncement, getAnnouncement, deleteAnnouncement,
   addReaction, removeReaction, loadReactionsForMessages, clearReactionsForRoom,
-  getUserByUsername, getUserById, insertUser, setUserBanned, setUserNickname, setUserRole, touchUser, listUsers, countUsersByIp,
+  getUserByUsername, getUserById, insertUser, setUserBanned, setUserNickname, setUserRole, setUserPassword, touchUser, listUsers, countUsersByIp,
   insertInvite, getInvite, listInvites, deleteInvite, bumpInviteUsed,
   insertJoinApplication, getJoinApplication, listPendingApplications, setApplicationStatus,
   usernameTaken, applicationCountByInvite, applicationCountByIp, countPendingByIp

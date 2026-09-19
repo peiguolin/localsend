@@ -178,6 +178,8 @@ function resolveStoredFile(raw) {
 // 语音消息（type=file + 音频魔数）额外标 audio=true，前端据此渲染内嵌播放器
 function decorateMsgUrls(msg) {
   if (!msg || !msg.storedName) return msg;
+  // 历史消息从 DB 读出时只有 fileSize 没有 size（前端统一用 size 渲染文件大小）
+  if (msg.fileSize != null && msg.size == null) msg.size = msg.fileSize;
   msg.downloadUrl = `/download/${encodeURIComponent(msg.storedName)}`;
   if (msg.type === 'image') msg.imageUrl = `/images/${encodeURIComponent(msg.storedName)}`;
   if (msg.type === 'file' && !msg.audio) {

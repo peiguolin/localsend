@@ -64,6 +64,7 @@
     <div class="auth-tabs">
       <button class="auth-tab active" id="tabLogin" type="button">登录</button>
       <button class="auth-tab" id="tabApply" type="button">申请加入</button>
+      <button class="auth-tab" id="tabChange" type="button">修改密码</button>
     </div>
 
     <!-- 登录 -->
@@ -101,6 +102,29 @@
       <div class="auth-tip">提交后等待管理员审批，通过后即可用用户名密码登录。一个 IP 最多注册 2 个账号。</div>
       <button class="auth-btn" type="submit" id="applyBtn">提交申请</button>
       <div class="auth-msg" id="applyMsg"></div>
+    </form>
+
+    <!-- 修改密码：凭旧密码证明身份；成功后所有登录会话失效，需用新密码重新登录 -->
+    <form id="changeForm" hidden>
+      <div class="auth-field">
+        <label for="changeUser">用户名</label>
+        <input id="changeUser" maxlength="24" autocomplete="username" required>
+      </div>
+      <div class="auth-field">
+        <label for="changeOld">当前密码</label>
+        <input id="changeOld" type="password" autocomplete="current-password" maxlength="128" required>
+      </div>
+      <div class="auth-field">
+        <label for="changeNew">新密码</label>
+        <input id="changeNew" type="password" autocomplete="new-password" maxlength="128" placeholder="至少 6 位" required>
+      </div>
+      <div class="auth-field">
+        <label for="changeNew2">确认新密码</label>
+        <input id="changeNew2" type="password" autocomplete="new-password" maxlength="128" required>
+      </div>
+      <div class="auth-tip">修改成功后，你所有设备上的登录会话都会失效，需要用新密码重新登录。</div>
+      <button class="auth-btn" type="submit" id="changeBtn">确认修改</button>
+      <div class="auth-msg" id="changeMsg"></div>
     </form>
 
     <div class="auth-foot">自建局域网聊天室 · 邀请制</div>

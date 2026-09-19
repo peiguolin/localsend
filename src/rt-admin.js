@@ -270,12 +270,28 @@ function register(io, socket) {
     cb && cb({ ok: true });
   });
 
-  // 账号列表（管理员权限分配用；含角色与封禁状态）
+  // 管理员强制重置密码（socket 版：覆盖宿主/口令管理员/管理员账号三类；被重置账号会话全部吊销）
+  socket.on('admin_reset_password', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    const username = String((data && data.username) || '').trim();
+    const r = auth.resetPassword(username, (data && data.newPassword) || '');
+    if (!r.ok) return cb && cb(r);
+    audit('reset_password', r.username || '', '管理员重置密码');
+    cb && cb({ ok: true, message: `已重置「${r.username}」的密码` });
+  });
+
+  // 账号列表（管理员权限分配 + 配额占用用；含角色、封禁状态与每人已用字节）
   socket.on('admin_accounts', (data, cb) => {
     if (typeof data === 'function') { cb = data; data = {}; }
     if (!guard()) return deny(cb);
     let rows = [];
-    try { rows = store.listUsers(); } catch (_) { rows = []; }
+    try {
+      rows = store.listUsers().map((u) => ({
+        ...u,
+        usedBytes: store.sumFileBytesByClient(u.id) // 每人已用上传字节（配额可视化）
+      }));
+    } catch (_) { rows = []; }
     cb && cb({ ok: true, users: rows });
   });
 

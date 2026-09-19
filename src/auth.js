@@ -190,6 +190,35 @@ function publicUser(u) {
   return { id: u.id, username: u.username, nickname: u.nickname, role: u.role };
 }
 
+// ---------- 密码修改 / 管理员重置 ----------
+function validateNewPassword(pw) {
+  if (!pw || String(pw).length < 6) return { ok: false, error: '密码至少 6 位' };
+  if (String(pw).length > 128) return { ok: false, error: '密码过长' };
+  return null;
+}
+
+// 本人改密：凭旧密码证明身份；成功后吊销该账号全部会话（含当前），需重新登录
+function changePassword(username, oldPassword, newPassword) {
+  const u = store.getUserByUsername(String(username || '').trim());
+  if (!u || !verifyPassword(oldPassword, u.passHash)) return { ok: false, error: '用户名或旧密码错误' };
+  const np = validateNewPassword(newPassword);
+  if (np) return np;
+  store.setUserPassword(u.id, hashPassword(newPassword));
+  revokeUserSessions(u.id);
+  return { ok: true, username: u.username };
+}
+
+// 管理员强制重置（不需要旧密码）；同样吊销该账号全部会话
+function resetPassword(username, newPassword) {
+  const u = store.getUserByUsername(String(username || '').trim());
+  if (!u) return { ok: false, error: '账号不存在' };
+  const np = validateNewPassword(newPassword);
+  if (np) return np;
+  store.setUserPassword(u.id, hashPassword(newPassword));
+  revokeUserSessions(u.id);
+  return { ok: true, username: u.username };
+}
+
 // 管理员远程口令（timing-safe；空口令 = 禁用远程管理）
 function checkAdminPassword(pw) {
   if (!ADMIN_PASSWORD) return false;
@@ -201,7 +230,7 @@ function checkAdminPassword(pw) {
 const remoteAdminEnabled = () => !!ADMIN_PASSWORD;
 
 // ---------- Express 门禁（invite 模式：只门禁数据路由；页面壳放行，未认证连接由客户端跳转登录页） ----------
-const PUBLIC_PATHS = new Set(['/api/join', '/api/login', '/api/logout', '/api/auth/status']);
+const PUBLIC_PATHS = new Set(['/api/join', '/api/login', '/api/logout', '/api/auth/status', '/api/password/change']);
 const GATED_PREFIXES = ['/api/', '/images/', '/download/', '/upload', '/data-export'];
 function authMiddleware(req, res, next) {
   if (!inviteEnabled()) return next();
@@ -236,6 +265,6 @@ module.exports = {
   clientIp, socketIp, isDirectLocalSocket, isDirectLocalReq,
   genInviteCode, validateInvite, submitApplication, approveApplication, rejectApplication,
   loadBannedUsersFromDb,
-  login, publicUser, checkAdminPassword, remoteAdminEnabled,
+  login, publicUser, checkAdminPassword, remoteAdminEnabled, changePassword, resetPassword,
   authMiddleware, extractToken
 };
