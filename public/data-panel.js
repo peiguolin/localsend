@@ -16,6 +16,7 @@
   const statDbSize = document.getElementById('statDbSize');
   const statDiskFiles = document.getElementById('statDiskFiles');
   const statDiskBytes = document.getElementById('statDiskBytes');
+  const statDiskWarn = document.getElementById('statDiskWarn');
   const dataRange = document.getElementById('dataRange');
   const dataRetention = document.getElementById('dataRetention');
   const sweepBtn = document.getElementById('dataSweepBtn');
@@ -53,6 +54,14 @@
       if (res.disk) {
         statDiskFiles.textContent = res.disk.files;
         statDiskBytes.textContent = fmtBytes(res.disk.bytes);
+        if (statDiskWarn) {
+          const pcts = [];
+          if (res.disk.quotaPct > 0) pcts.push(`容量 ${res.disk.quotaPct}%`);
+          if (res.disk.fsPct > 0) pcts.push(`磁盘 ${res.disk.fsPct}%`);
+          statDiskWarn.textContent = pcts.join(' · ') || '-';
+          const hi = Math.max(res.disk.quotaPct || 0, res.disk.fsPct || 0);
+          statDiskWarn.style.color = hi >= 90 ? 'var(--danger)' : (hi >= 80 ? '#d97706' : '');
+        }
       }
       if (res.retention) {
         const r = res.retention;
@@ -134,12 +143,13 @@
     publicMode: '公网模式（off=局域网匿名 / invite=邀请制）',
     adminPassword: '管理员远程口令（只写，不回显；留空=仅宿主机）',
     ipRegLimit: '同 IP 账号上限（0=不限）',
-    perUserUploadMB: '每人上传配额(MB，按账号/设备累计，0=不限)'
+    perUserUploadMB: '每人上传配额(MB，按账号/设备累计，0=不限)',
+    turnServers: 'TURN/STUN 服务器（ICE servers JSON 数组）'
   };
 
   // 按模块分组的配置项
   const CONFIG_GROUPS = [
-    { id: 'network',  title: '服务与网络', desc: '服务端口 · 宿主机地址白名单', fields: ['port', 'localAddrs'] },
+    { id: 'network',  title: '服务与网络', desc: '服务端口 · 宿主机地址白名单 · TURN/STUN', fields: ['port', 'localAddrs', 'turnServers'] },
     { id: 'storage',  title: '存储与保留', desc: '上传/数据库位置 · 文件与消息保留 · 容量上限', fields: ['uploadDir', 'dbFile', 'fileTtlDays', 'maxUploadMB', 'maxFileMB', 'msgTtlDays'] },
     { id: 'remind',   title: '日程提醒',   desc: '提醒轮询间隔', fields: ['remindTickMs'] },
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
@@ -174,13 +184,15 @@
         input.dataset.key = k;
         input.checked = !!v;
         row.appendChild(input);
-      } else if (k === 'botPrompt') {
-        // 长文本（系统提示词）
+      } else if (k === 'botPrompt' || k === 'turnServers') {
+        // 长文本（机器人系统提示词 / TURN ICE servers JSON）
         const ta = document.createElement('textarea');
         ta.className = 'modal-input data-config-prompt';
         ta.dataset.key = k;
-        ta.rows = 3;
-        ta.placeholder = '（可选）定义机器人角色与回答风格';
+        ta.rows = k === 'turnServers' ? 3 : 3;
+        ta.placeholder = k === 'turnServers'
+          ? '[{"urls":"turn:host:3478","username":"u","credential":"p"},{"urls":"stun:stun.l.google.com:19302"}]'
+          : '（可选）定义机器人角色与回答风格';
         ta.value = v === undefined ? '' : String(v);
         row.appendChild(ta);
       } else if (k === 'botApiKey' || k === 'adminPassword') {
@@ -418,7 +430,8 @@
     botban: '禁机器人', unbotban: '恢复机器人',
     config: '修改配置',
     grant_admin: '授予管理员', revoke_admin: '收回管理员',
-    change_password: '修改密码', reset_password: '重置密码'
+    change_password: '修改密码', reset_password: '重置密码',
+    login_fail: '登录失败', admin_login_fail: '口令失败'
   };
 
   function fmtAuditTime(ts) {

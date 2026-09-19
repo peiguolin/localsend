@@ -4,17 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>局域网聊天室</title>
-  <script>
-    // 主题初始化（须在样式表之前执行，避免首屏闪烁）
-    (function () {
-      var t = null;
-      try { t = localStorage.getItem('localsend-theme'); } catch (e) { /* ignore */ }
-      if (t !== 'dark' && t !== 'light') {
-        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-      }
-      document.documentElement.setAttribute('data-theme', t);
-    })();
-  </script>
+  <script src="theme.js"></script>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -241,6 +231,7 @@
           <div class="stat-card"><div class="stat-num" id="statDbSize">-</div><div class="stat-label">库文件大小</div></div>
           <div class="stat-card"><div class="stat-num" id="statDiskFiles">-</div><div class="stat-label">磁盘文件数</div></div>
           <div class="stat-card"><div class="stat-num" id="statDiskBytes">-</div><div class="stat-label">磁盘占用</div></div>
+          <div class="stat-card"><div class="stat-num" id="statDiskWarn">-</div><div class="stat-label">水位</div></div>
         </div>
         <div class="data-range" id="dataRange">最早记录：— · 最新记录：—</div>
         <div class="data-range" id="dataRetention">保留策略：—</div>

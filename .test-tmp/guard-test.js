@@ -22,7 +22,7 @@ console.log('【安全头中间件】');
 check('设置 Content-Security-Policy', typeof headers['Content-Security-Policy'] === 'string' && headers['Content-Security-Policy'].includes("default-src 'self'"));
 check("CSP 默认同源且禁 object/frame-ancestors", CSP.includes("object-src 'none'") && CSP.includes("frame-ancestors 'none'"));
 check('放行 blob/data 图片与媒体（灯箱/语音/视觉）', CSP.includes('img-src') && CSP.includes('blob:') && CSP.includes('data:'));
-check('放行内联主题脚本', CSP.includes("script-src 'self' 'unsafe-inline'"));
+check('脚本严格同源：禁内联/禁 eval（主题已抽 theme.js 外链）', CSP.includes("script-src 'self'") && !CSP.includes("script-src 'self' 'unsafe") && !CSP.includes('unsafe-eval'));
 check('X-Content-Type-Options=nosniff', headers['X-Content-Type-Options'] === 'nosniff');
 check('X-Frame-Options=DENY', headers['X-Frame-Options'] === 'DENY');
 check('Referrer-Policy=no-referrer', headers['Referrer-Policy'] === 'no-referrer');

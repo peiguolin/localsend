@@ -321,6 +321,10 @@
       state.myClientId = data.clientId;
       try { localStorage.setItem('localsend-client-id', state.myClientId); } catch (_) { /* ignore */ }
     }
+    // TURN/STUN 下发（配置中心 turnServers）：覆盖默认 STUN，通话/共享跨 NAT 用
+    if (Array.isArray(data.iceServers) && data.iceServers.length && app._call && app._call.RTC_CONFIG) {
+      app._call.RTC_CONFIG.iceServers = data.iceServers;
+    }
     state.isLocalHost = !!data.isLocal;
     myNameEl.textContent = state.myNickname;
     app.renderSystemMsg({

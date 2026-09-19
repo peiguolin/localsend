@@ -42,7 +42,10 @@ const CONFIG_DEFS = {
   // 同 IP 注册/申请数上限（防一人多号；0 = 不限）
   ipRegLimit:       { def: 2,    type: 'int', env: 'LOCALSEND_IP_REG_LIMIT',      restart: false },
   // 每人上传配额（按 clientId / 账号累计已发文件字节，0 = 不限；LAN 与 invite 模式通用，即时生效）
-  perUserUploadMB:  { def: 0,    type: 'float', env: 'LOCALSEND_PER_USER_UPLOAD_MB', restart: false }
+  perUserUploadMB:  { def: 0,    type: 'float', env: 'LOCALSEND_PER_USER_UPLOAD_MB', restart: false },
+  // TURN/STUN 服务器（ICE servers JSON 数组字符串，welcome 下发给客户端 WebRTC；公网通话跨 NAT 必需）
+  // 例：[{"urls":"turn:chat.example.com:3478","username":"u","credential":"p"},{"urls":"stun:stun.l.google.com:19302"}]
+  turnServers:      { def: '',   type: 'str', env: 'LOCALSEND_TURN_SERVERS',        restart: false }
 };
 
 // 读取配置文件（不存在或损坏则用默认）

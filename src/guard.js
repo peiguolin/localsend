@@ -1,12 +1,13 @@
 /* 安全与健壮性守卫：
  *  - securityHeaders：轻量安全响应头 + CSP（不引第三方依赖）。应用全同源、无外部 CDN、无 eval，
- *    但有一个内联主题初始化脚本、JS 动态样式、blob:/data: 图片与媒体，故 CSP 据此放行最小集合。
+ *    无内联脚本（主题初始化已抽成 theme.js），JS 动态样式/进度条需 style-src 'unsafe-inline'，
+ *    blob:/data: 图片与媒体故 CSP 据此放行最小集合。
  *  - installProcessGuards：兜底未捕获的 Promise rejection / 同步异常，带时间戳记录，致命错误走优雅退出。 */
 
 // Content-Security-Policy：
 //  default-src 'self'      一切默认只允许同源
-//  script-src 'self' 'unsafe-inline'  仅放行那一段内联主题初始化脚本（无 eval/new Function）
-//  style-src  'self' 'unsafe-inline'  JS 会直接写 element.style / 注入样式
+//  script-src 'self'       无内联脚本/事件处理器/eval（主题初始化已抽成 theme.js 外链）
+//  style-src  'self' 'unsafe-inline'  JS 动态 style="width:%" 进度条 + join 页内联 <style>
 //  img-src   self + data: + blob:    灯箱/待发托盘/机器人 base64 视觉图
 //  media-src self + blob:            语音消息与 WebRTC 本地/远端 blob 播放
 //  font-src  'self' data:
@@ -14,7 +15,7 @@
 //  worker-src 'self' blob:；object-src 'none'；frame-ancestors 'none'；base-uri 'self'
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "media-src 'self' blob: data:",

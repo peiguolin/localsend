@@ -120,6 +120,7 @@ npm start          # 默认端口 3000，PORT=8080 npm start 可改
 | `adminPassword` | 空 | 管理员远程口令（invite 模式下从公网管理用；只写、不回显；留空=仅宿主机可管理） |
 | `ipRegLimit` | 2 | 同 IP 可注册账号上限（0=不限；即时生效） |
 | `perUserUploadMB` | 0 | 每人上传配额（按账号/设备累计，0=不限；LAN 与 invite 通用，即时生效） |
+| `turnServers` | 空 | TURN/STUN 服务器（ICE servers JSON 数组字符串；welcome 下发给客户端 WebRTC，通话/屏幕共享跨 NAT 必需；即时生效） |
 
 **优先级**：环境变量 > `localsend.config.json` > 默认值。环境变量仍可随时覆盖（测试/临时用途），变量名即上表旧名（`PORT`、`LOCALSEND_*`）。
 
@@ -318,6 +319,7 @@ npm start          # 默认端口 3000，PORT=8080 npm start 可改
 - **HTTP 门禁**：`/api/*`、`/images/`、`/download/`、`/upload*`、`/data-export` 全部要求会话（Bearer 头或 `ls_session` Cookie，图片/下载走 Cookie）；登录/申请/状态/改密接口与页面壳放行，未登录访问自动跳到 `/join.html`
 - **每人上传配额**：`perUserUploadMB`（0=不限，LAN 与 invite 通用）按账号/设备累计已发文件字节（撤回/清理自动扣减），超限上传被拒；「邀请与审批 → 账号」列表实时显示每个账号已用空间，防单用户占满磁盘饿死他人（全局 `maxUploadMB` 是 LRU 兜底）
 - **宿主机直连豁免**：本机（未过反代）访问仍按局域网匿名处理，用于首次引导（创建第一个邀请码）与本地管理
+- **TURN 一键配置**：配置中心「服务与网络 → TURN/STUN 服务器」填 ICE servers JSON 数组（或 `turnServers` / `LOCALSEND_TURN_SERVERS`），welcome 自动下发，通话与屏幕共享的 RTCPeerConnection 即用，无需改代码
 - **invite 模式下禁用文件夹共享**（共享者本地目录不该暴露给登录用户）；AI 机器人、白板、通话等其余功能照常（提醒：公网下 @机器人 会消耗接口额度，可在用户管理里按人禁机器人）
 
 公网部署（证书 / 反代 / 端口 / TURN）见 [docs/公网部署.md](docs/公网部署.md)。**注意**：本模式适合私密小圈子（朋友/家人/同事）；对陌生人开放注册需要账号体系之外的更多合规与风控投入，请谨慎评估。

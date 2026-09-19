@@ -1,7 +1,7 @@
 /* 深色模式结构校验：
  * 1) :root 中定义的每个 CSS 变量在深色块中都有覆盖（防新增变量遗忘）
  * 2) 已知写死亮色的选择器都有深色覆盖
- * 3) index.html 主题初始化脚本在样式表之前执行、含切换按钮
+ * 3) 主题初始化脚本 theme.js 在样式表之前被引入（index.html/join.html 共用）、含切换按钮
  * 4) client.js 切换逻辑使用同一 localStorage 键 */
 const fs = require('fs');
 const path = require('path');
@@ -51,13 +51,15 @@ for (const sel of needOverride) {
   check(`深色覆盖存在: ${sel}`, re.test(css));
 }
 
-// 主题初始化脚本必须出现在样式表引用之前（防首屏闪烁）
-const scriptIdx = html.indexOf("localStorage.getItem('localsend-theme')");
+// 主题初始化脚本（theme.js，index.html/join.html 共用）：必须出现在样式表引用之前（防首屏闪烁）
+const themeSrc = fs.existsSync(path.join(PUB, 'theme.js')) ? fs.readFileSync(path.join(PUB, 'theme.js'), 'utf8') : '';
+const themeRefIdx = html.indexOf('<script src="theme.js"></script>');
 const cssIdx = html.indexOf('<link rel="stylesheet"');
-check('主题初始化脚本存在', scriptIdx !== -1);
-check('初始化脚本在样式表之前执行', scriptIdx !== -1 && cssIdx !== -1 && scriptIdx < cssIdx);
-check('初始化脚本设置 data-theme 属性', html.includes("setAttribute('data-theme'"));
-check('默认跟随系统 prefers-color-scheme', html.includes('prefers-color-scheme: dark'));
+check('主题初始化脚本存在（theme.js）', themeSrc.includes("localStorage.getItem('localsend-theme')"));
+check('初始化脚本在样式表之前执行', themeRefIdx !== -1 && cssIdx !== -1 && themeRefIdx < cssIdx);
+check('初始化脚本设置 data-theme 属性', themeSrc.includes("setAttribute('data-theme'"));
+check('默认跟随系统 prefers-color-scheme', themeSrc.includes('prefers-color-scheme: dark'));
+check('join.html 同样引入 theme.js', fs.readFileSync(path.join(PUB, 'join.html'), 'utf8').includes('<script src="theme.js"></script>'));
 check('顶栏含主题切换按钮', html.includes('id="themeToggle"'));
 
 // client.js 切换逻辑与初始化脚本使用同一存储键

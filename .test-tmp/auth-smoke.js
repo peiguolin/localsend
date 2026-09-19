@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { io } = require('socket.io-client');
+const sqlite = require('better-sqlite3');
 
 const ROOT = path.join(__dirname, '..');
 const PORT_A = 3110, PORT_B = 3111, PORT_C = 3112;
@@ -124,16 +125,20 @@ function socketEmit(sock, event, data) {
 async function main() {
   const tmpDb = (n) => path.join(__dirname, `.auth-${n}.db`);
   for (const n of ['a', 'b', 'c']) { try { fs.rmSync(tmpDb(n), { force: true }); } catch (_) {} }
+  try { fs.rmSync(path.join(__dirname, '.auth-a-uploads'), { recursive: true, force: true }); } catch (_) {}
   const tmpConfigA = path.join(__dirname, '.auth-config.json');
   try { fs.rmSync(tmpConfigA, { force: true }); } catch (_) {}
 
   console.log('=== 实例A：invite 模式（本机管理员） ===');
   const procA = await startServer(PORT_A, {
     LOCALSEND_DB_FILE: tmpDb('a'),
+    LOCALSEND_UPLOAD_DIR: path.join(__dirname, '.auth-a-uploads'), // 上传目录隔离，避免污染真实数据
     LOCALSEND_PUBLIC_MODE: 'invite',
     LOCALSEND_ADMIN_PASSWORD: 'admin-secret',
     LOCALSEND_CONFIG_FILE: tmpConfigA,          // 配置读写隔离到临时文件
-    LOCALSEND_PER_USER_UPLOAD_MB: '0.05'        // 每人上传配额 50KB，验证配额拒绝
+    LOCALSEND_PER_USER_UPLOAD_MB: '0.05',       // 每人上传配额 50KB，验证配额拒绝
+    LOCALSEND_MAX_UPLOAD_MB: '1',               // uploads 容量上限 1MB，让磁盘水位有可测的分母
+    LOCALSEND_TURN_SERVERS: '[{"urls":"turn:127.0.0.1:3478","username":"u","credential":"p"},{"urls":"stun:stun.l.google.com:19302"}]'
   });
 
   try {
@@ -151,6 +156,9 @@ async function main() {
 
     // 4. 管理员创建邀请码（本机直连：LAN 式匿名引导）
     const adminS = await connectSocket(BASE_A);
+    check('TURN 下发：welcome 带解析后的 ICE 服务器列表', Array.isArray(adminS.welcome.iceServers)
+      && adminS.welcome.iceServers.length === 2
+      && adminS.welcome.iceServers[0].urls === 'turn:127.0.0.1:3478');
     let inv = await socketEmit(adminS.s, 'admin_invites', { action: 'create', maxUses: 2, note: '测试邀请' });
     check('创建邀请码', inv.ok === true && /^[A-Z0-9]{5}-[A-Z0-9]{5}$/.test(inv.code || ''));
     const code = inv.code;
@@ -292,6 +300,13 @@ async function main() {
     // 单文件未超配额但累计超限（已用 5KB + 本次 50KB > 52KB）→ 证明按累计字节计数
     r = await uploadFile(BASE_A, { token: token2, xff: '203.0.113.9', clientId: carolUserId, nickname: '小C', name: 'cum.txt', size: 50 * 1024 });
     check('累计超配额被拒（单文件未超）', r.status === 403 && /配额/.test((r.body && r.body.error) || ''));
+    // 磁盘水位：uploads 容量水位 > 0（相对 maxUploadMB），数据面板据此提示
+    // 注：history_stats 处理器签名仅 (cb)，需直接只带回调调用
+    inv = await new Promise((resolve) => {
+      const t = setTimeout(() => resolve({ ok: false, error: '超时' }), 3000);
+      adminS.s.emit('history_stats', (res) => { clearTimeout(t); resolve(res); });
+    });
+    check('磁盘水位上报（quotaPct>0）', inv.ok === true && inv.disk && typeof inv.disk.quotaPct === 'number' && inv.disk.quotaPct > 0);
 
     // 24. 收回管理员：会话被吊销 → 配置接口立即失效
     inv = await socketEmit(adminS.s, 'admin_set_role', { username: 'carol', role: 'user' });
@@ -315,6 +330,17 @@ async function main() {
     check('改密后旧会话全部吊销', r.body.authed === false);
     r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'secret123' }) });
     check('旧密码登录被拒', r.status === 401);
+    // 登录失败审计：DB 落一条 login_fail，但默认审计视图过滤掉（防刷屏）
+    try {
+      const dbA = sqlite(tmpDb('a'));
+      const failCnt = dbA.prepare(`SELECT COUNT(*) c FROM audit_log WHERE action = 'login_fail'`).get().c;
+      dbA.close();
+      check('登录失败已记入审计表', failCnt >= 1);
+    } catch (e) {
+      check('登录失败已记入审计表', false, e.message);
+    }
+    inv = await socketEmit(adminS.s, 'admin_audit', {});
+    check('默认审计视图过滤登录失败(防刷屏)', Array.isArray(inv.entries) && inv.entries.every((x) => x.action !== 'login_fail'));
     r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'dave', password: 'newsecret456' }) });
     check('新密码登录成功', r.status === 200 && r.body.token);
     // 管理员重置（宿主机直连）：被重置账号会话全部失效
@@ -392,6 +418,7 @@ async function main() {
   try {
     const anon = await connectSocket(BASE_C);
     check('off 模式匿名连接正常', anon.nickname.startsWith('用户'));
+    check('未配 TURN 时 welcome 不下发 ICE 列表', Array.isArray(anon.welcome.iceServers) && anon.welcome.iceServers.length === 0);
     const r = await api(BASE_C, '/api/auth/status');
     check('status: mode=off', r.body.mode === 'off');
     // 匿名 HTTP 访问不受门禁影响
@@ -408,6 +435,7 @@ async function main() {
 
   for (const n of ['a', 'b', 'c']) { try { fs.rmSync(tmpDb(n), { force: true }); } catch (_) {} }
   try { fs.rmSync(tmpConfigA, { force: true }); } catch (_) {}
+  try { fs.rmSync(path.join(__dirname, '.auth-a-uploads'), { recursive: true, force: true }); } catch (_) {}
 
   console.log(failures === 0 ? '全部通过 ✅' : `失败 ${failures} 项 ❌`);
   process.exit(failures === 0 ? 0 : 1);

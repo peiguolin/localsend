@@ -983,8 +983,11 @@ function insertAudit(entry) {
 
 function listAudit(limit) {
   const d = getDb();
+  // 默认视图排除登录失败等高频噪声（仅留 DB 备查，防刷屏淹没操作日志）
   return d.prepare(`
-    SELECT at, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?
+    SELECT at, actor, action, target, detail FROM audit_log
+    WHERE action NOT IN ('login_fail', 'admin_login_fail')
+    ORDER BY id DESC LIMIT ?
   `).all(Math.min(Number(limit) || 50, 200));
 }
 

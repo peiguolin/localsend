@@ -63,7 +63,13 @@ function registerRoutes(app) {
       return res.status(429).json({ ok: false, error: '尝试过于频繁，请稍后再试' });
     }
     const r = auth.login(body.username, body.password);
-    if (!r.ok) return res.status(401).json(r);
+    if (!r.ok) {
+      // 登录失败审计（配合登录限流防爆破；操作日志可查）
+      try {
+        insertAudit({ actor: String(body.username || '?'), action: 'login_fail', target: String(body.username || ''), detail: `IP: ${ip}` });
+      } catch (_) { /* 审计失败不阻塞 */ }
+      return res.status(401).json(r);
+    }
     // 会话写 HttpOnly cookie（供 <img>/<audio> 等无法带 Authorization 头的资源鉴权）；应用恒为 HTTPS，故加 Secure
     const maxAge = 30 * 24 * 60 * 60;
     res.setHeader('Set-Cookie',

@@ -9,7 +9,7 @@ const express = require('express');
 const https = require('https');
 const { Server } = require('socket.io');
 
-const { PORT, ROOT_DIR, MAX_FILE_SIZE } = require('./src/config');
+const { PORT, ROOT_DIR, MAX_FILE_SIZE, currentConfig } = require('./src/config');
 const { loadCredentials } = require('./src/certs');
 const state = require('./src/state');
 const store = require('./db.js');
@@ -38,6 +38,17 @@ const routesAuth = require('./src/routes-auth');
 const app = express();
 const server = https.createServer(loadCredentials(), app);
 const io = new Server(server);
+
+// TURN/STUN 服务器（配置中心 turnServers，JSON 数组字符串）：welcome 下发给客户端 WebRTC 用
+function parseIceServers() {
+  try {
+    const raw = currentConfig().turnServers;
+    if (!raw) return [];
+    const arr = JSON.parse(String(raw));
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((s) => s && typeof s === 'object' && s.urls);
+  } catch (_) { return []; }
+}
 
 // 安全响应头 + CSP（在所有路由/静态资源之前）
 const { securityHeaders, installProcessGuards, socketRateLimiter } = require('./src/guard');
@@ -160,7 +171,8 @@ io.on('connection', (socket) => {
   socket.emit('welcome', {
     id: socket.id, nickname: socket.data.nickname, clientId: socket.data.clientId, online: state.onlineUsers.size,
     history, rooms: myRooms, isLocal: isLocalSocket(socket),
-    announcement, pins
+    announcement, pins,
+    iceServers: parseIceServers()
   });
   // 推送当前共享列表与屏幕共享状态
   socket.emit('shares_update', Array.from(state.shares.values()).map(rtShare.publicShareInfo));
@@ -224,6 +236,14 @@ const reminderTimer = rtCalendar.startReminder(io);
 {
   const rc = lifecycle.retentionConfig();
   console.log(`  生命周期:   文件保留 ${rc.fileTtlDays > 0 ? rc.fileTtlDays + ' 天' : '不限'} · 容量上限 ${rc.maxUploadMB > 0 ? rc.maxUploadMB + 'MB' : '不限'} · 消息保留 ${rc.msgTtlDays > 0 ? rc.msgTtlDays + ' 天' : '永久'} · 每 ${rc.sweepIntervalMin} 分钟清扫`);
+  // 磁盘水位告警：uploads 容量或所在分区接近满时启动即提示
+  const disk = lifecycle.diskUsage();
+  const warns = [];
+  if (disk.quotaPct >= 80) warns.push(`uploads 容量已用 ${disk.quotaPct}%`);
+  if (disk.fsPct >= 80) warns.push(`磁盘分区已用 ${disk.fsPct}%`);
+  if (warns.length) {
+    console.warn(`  ⚠ 磁盘水位告警：${warns.join('；')}。请及时清理（数据面板可「立即清理」）或扩容。`);
+  }
 }
 
 // 恢复持久化的群聊房间（成员按 clientId 记录，重启后重新加入的在线成员自动归位）

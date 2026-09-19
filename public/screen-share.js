@@ -29,6 +29,12 @@
     ]
   };
 
+  // 优先用服务端下发的 TURN/STUN 列表（配置中心 turnServers；call-bus 在 welcome 时写入），否则退回默认 STUN
+  function pcConfig() {
+    const shared = window.chatApp && window.chatApp._call && window.chatApp._call.RTC_CONFIG;
+    return shared || RTC_CONFIG;
+  }
+
   // ---------- 状态 ----------
   let sharing = false;                 // 我是共享者
   let watching = false;                // 我是观看者
@@ -152,7 +158,7 @@
     const viewerId = data.viewerId;
     viewerNames.set(viewerId, data.viewerName || '观众');
     renderViewers();
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(pcConfig());
     presenterPCs.set(viewerId, pc);
     for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
     pc.onicecandidate = (e) => {
@@ -225,7 +231,7 @@
   socket.on('ss_offer', async (data) => {
     if (!watching || !data || data.fromId !== remotePresenterId) return;
     if (viewerPC) viewerPC.close();
-    viewerPC = new RTCPeerConnection(RTC_CONFIG);
+    viewerPC = new RTCPeerConnection(pcConfig());
     viewerPC.onicecandidate = (e) => {
       if (e.candidate) socket.emit('ss_ice', { toId: data.fromId, candidate: e.candidate });
     };

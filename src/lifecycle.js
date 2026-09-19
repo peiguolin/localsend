@@ -10,7 +10,7 @@ const {
 const { loadMeta, deleteStoredFile, STORED_NAME_RE } = require('./filemeta');
 const { purgeChatLogBefore } = require('./chatlog');
 
-// ---------- 磁盘占用统计（数据面板展示） ----------
+// ---------- 磁盘占用统计（数据面板展示 + 水位告警） ----------
 function diskUsage() {
   let files = 0;
   let bytes = 0;
@@ -28,7 +28,17 @@ function diskUsage() {
       }
     }
   })(UPLOAD_DIR);
-  return { files, bytes };
+  const out = { files, bytes };
+  // uploads 容量水位：相对 maxUploadMB（0=不限时无意义）
+  out.quotaPct = MAX_UPLOAD_BYTES > 0 ? Math.round((bytes / MAX_UPLOAD_BYTES) * 1000) / 10 : 0;
+  // 磁盘分区水位（statfs 可用时）
+  try {
+    const st = fs.statfsSync(UPLOAD_DIR);
+    if (st && st.blocks > 0) {
+      out.fsPct = Math.round((1 - st.bavail / st.blocks) * 1000) / 10;
+    }
+  } catch (_) { /* 平台不支持则省略 */ }
+  return out;
 }
 
 // 保留策略配置（面板展示用）
