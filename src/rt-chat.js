@@ -39,7 +39,7 @@ function register(ioRef, socket) {
       type: 'text',
       room,
       senderId: socket.id,
-      clientId: String((data && data.clientId) || ''),
+      clientId: socket.data.clientId, // 服务端身份（握手/会话签发），客户端自报不可信
       nickname: socket.data.nickname,
       text,
       mentions: parseMentions(text),
@@ -99,6 +99,10 @@ function register(ioRef, socket) {
     const old = socket.data.nickname;
     socket.data.nickname = name;
     onlineUsers.set(socket.id, name);
+    // 公网邀请模式：昵称改动持久化到账号，重连/换设备不丢
+    if (require('./auth').inviteEnabled() && socket.data.clientId) {
+      try { store.setUserNickname(socket.data.clientId, name); } catch (_) { /* 非关键 */ }
+    }
     // 同步其共享的展示昵称
     const share = myShareOf(socket.id);
     if (share) {

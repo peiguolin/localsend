@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 · 局域网聊天室</title>
+  <script>
+    // 主题初始化（与 index.html 同逻辑，避免首屏闪烁）
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('localsend-theme'); } catch (e) { /* ignore */ }
+      if (t !== 'dark' && t !== 'light') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* 登录/申请页（复用 style.css 变量；仅本页样式） */
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+    .auth-card {
+      width: min(400px, 92vw);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 26px 24px 22px;
+    }
+    .auth-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .auth-sub { font-size: 12.5px; color: var(--text-faint); margin-bottom: 18px; line-height: 1.5; }
+    .auth-tabs { display: flex; gap: 6px; margin-bottom: 16px; background: var(--code-bg); border-radius: 10px; padding: 4px; }
+    .auth-tab {
+      flex: 1; padding: 7px 0; border: none; border-radius: 8px; background: transparent;
+      font-size: 13.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+    }
+    .auth-tab.active { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+    .auth-field { margin-bottom: 12px; }
+    .auth-field label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+    .auth-field input {
+      width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+      font-size: 14px; color: var(--text); background: var(--panel); outline: none; transition: border-color 0.15s;
+    }
+    .auth-field input:focus { border-color: var(--accent); }
+    .auth-tip { font-size: 12px; color: var(--text-faint); line-height: 1.5; margin: -4px 0 10px; }
+    .auth-btn {
+      width: 100%; padding: 10px 0; border: none; border-radius: 9px; background: var(--accent);
+      color: #fff; font-size: 14.5px; font-weight: 600; cursor: pointer; transition: background 0.15s; margin-top: 4px;
+    }
+    .auth-btn:hover { background: var(--accent-hover); }
+    .auth-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .auth-msg { margin-top: 12px; font-size: 13px; line-height: 1.5; display: none; }
+    .auth-msg.ok { color: var(--success); }
+    .auth-msg.err { color: var(--danger); }
+    .auth-msg.show { display: block; }
+    .auth-foot { margin-top: 16px; text-align: center; font-size: 12px; color: var(--text-faint); }
+  </style>
+</head>
+<body>
+  <div class="auth-card">
+    <div class="auth-title">局域网聊天室</div>
+    <div class="auth-sub" id="authSub">需要邀请码与管理员审批后加入</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tabLogin" type="button">登录</button>
+      <button class="auth-tab" id="tabApply" type="button">申请加入</button>
+    </div>
+
+    <!-- 登录 -->
+    <form id="loginForm" autocomplete="on">
+      <div class="auth-field">
+        <label for="loginUser">用户名</label>
+        <input id="loginUser" autocomplete="username" maxlength="24" required>
+      </div>
+      <div class="auth-field">
+        <label for="loginPass">密码</label>
+        <input id="loginPass" type="password" autocomplete="current-password" maxlength="128" required>
+      </div>
+      <button class="auth-btn" type="submit" id="loginBtn">登 录</button>
+      <div class="auth-msg" id="loginMsg"></div>
+    </form>
+
+    <!-- 申请 -->
+    <form id="applyForm" hidden>
+      <div class="auth-field">
+        <label for="applyCode">邀请码</label>
+        <input id="applyCode" maxlength="20" placeholder="如 ABCDE-FGHJK" autocomplete="off" required>
+      </div>
+      <div class="auth-field">
+        <label for="applyUser">用户名</label>
+        <input id="applyUser" maxlength="24" autocomplete="off" placeholder="3~24 位字母/数字/._-" required>
+      </div>
+      <div class="auth-field">
+        <label for="applyNick">昵称（可选，默认同用户名）</label>
+        <input id="applyNick" maxlength="20" autocomplete="off">
+      </div>
+      <div class="auth-field">
+        <label for="applyPass">密码</label>
+        <input id="applyPass" type="password" maxlength="128" autocomplete="new-password" placeholder="至少 6 位" required>
+      </div>
+      <div class="auth-tip">提交后等待管理员审批，通过后即可用用户名密码登录。一个 IP 最多注册 2 个账号。</div>
+      <button class="auth-btn" type="submit" id="applyBtn">提交申请</button>
+      <div class="auth-msg" id="applyMsg"></div>
+    </form>
+
+    <div class="auth-foot">自建局域网聊天室 · 邀请制</div>
+  </div>
+
+  <script src="join.js"></script>
+</body>
+</html>

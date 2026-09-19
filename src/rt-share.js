@@ -286,6 +286,10 @@ function register(ioRef, socket) {
   // 注册共享（每人同时只能共享一个文件夹）
   socket.on('share_register', (data, cb) => {
     cb = typeof cb === 'function' ? cb : () => {};
+    // 公网邀请模式禁用：文件夹共享会把共享者本地目录暴露给所有登录用户，公网风险不可控
+    if (require('./auth').inviteEnabled()) {
+      return cb({ ok: false, error: '公网邀请模式下已禁用文件夹共享' });
+    }
     if (myShareOf(socket.id)) return cb({ ok: false, error: '你已有共享中的文件夹，请先取消' });
     const name = (String((data && data.name) || '').trim() || '未命名共享').slice(0, 50);
     const password = data && typeof data.password === 'string' && data.password ? data.password : null;

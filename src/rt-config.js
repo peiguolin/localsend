@@ -22,6 +22,7 @@ function registerRoutes(app) {
     }
     const cfg = currentConfig();
     cfg.botApiKey = ''; // 只写不回显：API Key 不在面板回读，留空即表示保持原值
+    cfg.adminPassword = ''; // 同上：管理口令不回显
     res.json({ ok: true, config: cfg });
   });
 

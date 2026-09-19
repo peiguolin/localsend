@@ -1,0 +1,83 @@
+/* 公网邀请模式 HTTP 路由：状态查询 / 加入申请 / 登录 / 登出
+ * publicMode='off' 时 /api/auth/status 返回 mode:'off'，其余接口仍可用但不影响 LAN（登录仅对 invite 模式有意义）。
+ * 登录成功签发会话 token（同时写 HttpOnly cookie，供 <img>/<audio> 等无法带 Authorization 头的资源使用）。 */
+'use strict';
+const auth = require('./auth');
+const { PUBLIC_MODE } = require('./config');
+const { insertAudit } = require('../db.js');
+
+// 登录/申请接口的按 IP 频率闸（防口令爆破/刷申请；宽松阈值，仅挡暴力尝试）
+const attemptHits = new Map(); // 'ip:action' -> number[]
+function rateGate(ip, action, limit, windowMs) {
+  const key = `${ip || '?'}:${action}`;
+  const now = Date.now();
+  let arr = attemptHits.get(key);
+  if (!arr) { arr = []; attemptHits.set(key, arr); }
+  while (arr.length && now - arr[0] > windowMs) arr.shift();
+  if (arr.length >= limit) return false;
+  arr.push(now);
+  return true;
+}
+
+function registerRoutes(app) {
+  // 当前认证状态：前端据此决定跳 /join.html 还是直连
+  app.get('/api/auth/status', (req, res) => {
+    const session = auth.extractToken(req) ? auth.validateSession(auth.extractToken(req)) : null;
+    res.json({
+      ok: true,
+      mode: PUBLIC_MODE,
+      authed: !!session,
+      user: session ? { id: session.userId, username: session.username, nickname: session.nickname, role: session.role } : null
+    });
+  });
+
+  // 加入申请：邀请码 + 用户名 + 密码 + 昵称 -> pending，等待管理员审批
+  app.post('/api/join', require('express').json({ limit: '16kb' }), (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const ip = auth.clientIp(req);
+    if (PUBLIC_MODE !== 'invite') {
+      return res.status(403).json({ ok: false, error: '当前未开启邀请模式' });
+    }
+    if (!rateGate(ip, 'join', 10, 60000)) {
+      return res.status(429).json({ ok: false, error: '申请过于频繁，请稍后再试' });
+    }
+    const r = auth.submitApplication({
+      code: body.code, username: body.username, password: body.password, nickname: body.nickname,
+      ip, ua: req.headers['user-agent'] || ''
+    });
+    if (!r.ok) return res.status(400).json(r);
+    try {
+      insertAudit({ actor: '申请', action: 'join_apply', target: String(body.username || ''), detail: `IP: ${ip}` });
+    } catch (_) { /* 审计失败不阻塞 */ }
+    res.json({ ok: true, id: r.id, message: '申请已提交，等待管理员审批' });
+  });
+
+  // 登录：用户名 + 密码 -> 会话 token（响应体 + HttpOnly cookie）
+  app.post('/api/login', require('express').json({ limit: '16kb' }), (req, res) => {
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const ip = auth.clientIp(req);
+    if (PUBLIC_MODE !== 'invite') {
+      return res.status(403).json({ ok: false, error: '当前未开启邀请模式' });
+    }
+    if (!rateGate(ip, 'login', 10, 60000)) {
+      return res.status(429).json({ ok: false, error: '尝试过于频繁，请稍后再试' });
+    }
+    const r = auth.login(body.username, body.password);
+    if (!r.ok) return res.status(401).json(r);
+    // 会话写 HttpOnly cookie（供 <img>/<audio> 等无法带 Authorization 头的资源鉴权）；应用恒为 HTTPS，故加 Secure
+    const maxAge = 30 * 24 * 60 * 60;
+    res.setHeader('Set-Cookie',
+      `ls_session=${encodeURIComponent(r.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}; Secure`);
+    res.json({ ok: true, token: r.token, user: auth.publicUser(r.user) });
+  });
+
+  // 登出：作废会话 + 清 cookie
+  app.post('/api/logout', require('express').json({ limit: '4kb' }), (req, res) => {
+    const token = auth.extractToken(req);
+    if (token) auth.revokeSession(token);
+    res.setHeader('Set-Cookie', 'ls_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure');
+    res.json({ ok: true });
+  });
+}
+
+module.exports = { registerRoutes };

@@ -32,6 +32,8 @@ const rtAdmin = require('./src/rt-admin');
 const rtPin = require('./src/rt-pin');
 const rtReactions = require('./src/rt-reactions');
 const rtRead = require('./src/rt-read');
+const auth = require('./src/auth');
+const routesAuth = require('./src/routes-auth');
 
 const app = express();
 const server = https.createServer(loadCredentials(), app);
@@ -44,7 +46,12 @@ app.use(securityHeaders);
 // ---------- 静态资源 ----------
 app.use(express.static(path.join(ROOT_DIR, 'public')));
 
-// ---------- HTTP 路由（文件 + 文件夹共享中转 + 日历数据 + 翻译 + 配置中心） ----------
+// ---------- 公网邀请模式门禁（'off' 时完全旁路） ----------
+// 登录/申请/状态/join 页放行；其余 /api、/images、/download、/upload、/data-export 一律要求有效会话
+app.use(auth.authMiddleware);
+
+// ---------- HTTP 路由（公网认证 + 文件/文件夹共享中转 + 日历数据 + 翻译 + 配置中心） ----------
+routesAuth.registerRoutes(app);
 routesFiles.registerRoutes(app, io);
 rtShare.registerRoutes(app, io);
 rtCalendar.registerRoutes(app);
@@ -56,13 +63,41 @@ io.on('connection', (socket) => {
   // 按连接的事件频率闸（丢弃超限包；白板笔迹/光标/ICE 等高频流豁免）
   socket.use(socketRateLimiter());
 
-  socket.data.nickname = randomNickname();
   socket.data.lastRenameAt = 0;
   socket.data.lastCursorRelay = 0;
-  // 持久身份（握手带来）：用于群聊成员身份与房间恢复
-  const clientId = String((socket.handshake.auth && socket.handshake.auth.clientId) || '');
-  socket.data.clientId = clientId;
-  // 封禁校验：被剔除的 clientId 直接断开，不允许进入聊天室
+  // 公网邀请模式：远端连接必须带有效会话 token（身份由服务端签发）；
+  // 宿主机直连（未过反代）按 LAN 匿名处理，用于引导创建首个邀请码/审批/本机管理。
+  let clientId = '';
+  if (auth.inviteEnabled()) {
+    if (auth.isDirectLocalSocket(socket)) {
+      socket.data.nickname = randomNickname();
+      clientId = String((socket.handshake.auth && socket.handshake.auth.clientId) || '');
+      socket.data.clientId = clientId;
+      socket.data.localHost = true;
+    } else {
+      const token = String((socket.handshake.auth && socket.handshake.auth.sessionToken) || '');
+      const session = auth.validateSession(token);
+      if (!session) {
+        // 预认证态：只注册管理员登录事件（其余事件一律被 rt-admin 拒绝），不加入房间、不广播
+        socket.data.preAuth = true;
+        socket.emit('auth_required', { error: '未登录或会话已过期，请先登录' });
+        rtAdmin.register(io, socket);
+        return;
+      }
+      clientId = session.userId;
+      socket.data.clientId = clientId;
+      socket.data.nickname = session.nickname || session.username;
+      socket.data.role = session.role || 'user';
+      socket.data.session = session;
+      try { store.touchUser(clientId, auth.socketIp(socket)); } catch (_) { /* 非关键 */ }
+    }
+  } else {
+    socket.data.nickname = randomNickname();
+    // 持久身份（握手带来）：用于群聊成员身份与房间恢复
+    clientId = String((socket.handshake.auth && socket.handshake.auth.clientId) || '');
+    socket.data.clientId = clientId;
+  }
+  // 封禁校验：被剔除的 clientId / 账号直接断开，不允许进入聊天室
   if (clientId && state.bans.has(clientId)) {
     socket.emit('system_message', { text: '你已被移出聊天室，无法重新加入' });
     socket.disconnect(true);
@@ -123,7 +158,7 @@ io.on('connection', (socket) => {
     pins = rtPin.loadRoomPins('main');
   } catch (_) { /* 历史不可用 */ }
   socket.emit('welcome', {
-    id: socket.id, nickname: socket.data.nickname, online: state.onlineUsers.size,
+    id: socket.id, nickname: socket.data.nickname, clientId: socket.data.clientId, online: state.onlineUsers.size,
     history, rooms: myRooms, isLocal: isLocalSocket(socket),
     announcement, pins
   });
@@ -202,6 +237,12 @@ try {
 // 恢复持久化的用户管理状态（剔除/禁言/禁机器人）与房间级机器人覆盖
 rtAdmin.loadUserAdminFromDb();
 rtBot.loadRoomBotFromDb();
+
+// 公网邀请模式：恢复被封禁账号（users.banned=1 -> 封禁表，跨重启持续封禁）
+if (auth.inviteEnabled()) {
+  auth.loadBannedUsersFromDb();
+  console.log(`  公网模式:   邀请制已开启（登录 + 审批 + IP 审计）${auth.remoteAdminEnabled() ? '，远程管理口令已配置' : '，远程管理口令未配置（仅宿主机可管理）'}`);
+}
 
 // 翻译引擎探测（自动发现本机 LibreTranslate）完成后再对外服务
 rtTranslate.detectEngine().finally(() => {

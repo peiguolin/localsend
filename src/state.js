@@ -37,5 +37,8 @@ module.exports = {
 
   // 机器人续聊窗口（内存态）：roomId -> { clientId, expireAt }
   // 某次 @机器人 成功后，同一用户在窗口内发普通消息（不必再 @）即继续对话；超时/退出词结束
-  botFollowup: new Map()
+  botFollowup: new Map(),
+
+  // 公网邀请模式会话（内存态）：sessionToken -> { userId, username, nickname, role, createdAt }
+  sessions: new Map()
 };

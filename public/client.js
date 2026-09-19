@@ -20,11 +20,32 @@
 
   // 握手带持久 clientId：服务端据此下发我加入的群聊房并自动加入对应 Socket.IO room
   // 握手带 joinToken（来自 ?join= 邀请链接）：服务端命中群聊房则自动成为成员并入房
+  // 公网邀请模式：握手带会话 token（登录后存入 localStorage），服务端签发身份
   const joinParams = typeof location !== 'undefined' && location.search ? new URLSearchParams(location.search) : null;
   const joinToken = joinParams ? (joinParams.get('join') || '') : '';
-  const socket = io({ auth: { clientId: state.myClientId, ...(joinToken ? { joinToken } : {}) } });
+  let sessionToken = '';
+  try { sessionToken = localStorage.getItem('localsend-session-token') || ''; } catch (_) { /* 非浏览器 */ }
+  const socket = io({ auth: { clientId: state.myClientId, ...(sessionToken ? { sessionToken } : {}), ...(joinToken ? { joinToken } : {}) } });
   // 功能分片在 Node require 期即需取用 socket（浏览器由底部导出设置，此赋值幂等）
   app.socket = socket;
+
+  // 公网邀请模式：会话失效/未登录 → 跳登录页；退出登录后回登录页
+  socket.on('auth_required', () => {
+    try { localStorage.removeItem('localsend-session-token'); } catch (_) { /* ignore */ }
+    if (typeof location !== 'undefined') location.href = '/join.html';
+  });
+  const logoutBtn = typeof document !== 'undefined' ? document.getElementById('logoutBtn') : null;
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try { await fetch('/api/logout', { method: 'POST' }); } catch (_) { /* 忽略网络错误 */ }
+      try { localStorage.removeItem('localsend-session-token'); } catch (_) { /* ignore */ }
+      location.href = '/join.html';
+    });
+    // invite 模式且有会话才显示退出按钮
+    fetch('/api/auth/status').then((r) => r.json()).then((s) => {
+      if (s && s.mode === 'invite' && s.authed) logoutBtn.hidden = false;
+    }).catch(() => { /* ignore */ });
+  }
 
   if (typeof module !== 'undefined' && module.exports) {
     require('./client-parts/call.js');
@@ -295,6 +316,11 @@
   socket.on('welcome', (data) => {
     state.myNickname = data.nickname;
     state.myId = data.id || '';
+    // 服务端签发的身份（公网邀请模式下为账号 id；LAN 下与本地生成值一致）
+    if (data.clientId) {
+      state.myClientId = data.clientId;
+      try { localStorage.setItem('localsend-client-id', state.myClientId); } catch (_) { /* ignore */ }
+    }
     state.isLocalHost = !!data.isLocal;
     myNameEl.textContent = state.myNickname;
     app.renderSystemMsg({

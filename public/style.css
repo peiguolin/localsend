@@ -104,6 +104,22 @@ body {
   color: var(--accent);
 }
 
+/* 退出登录（公网邀请模式显示） */
+.logout-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.logout-btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* ===== 主区域 ===== */
 .main {
   display: flex;
@@ -2525,6 +2541,7 @@ body, .topbar, .share-panel, .chat-area, .sidebar, .inputbar, .modal-card {
     max-width: 30vw;
     flex-shrink: 1;
   }
+  .logout-btn { padding: 2px 8px; font-size: 12px; flex-shrink: 0; }
   .members-label { display: none; }
   .main {
     margin-top: 0;
@@ -3730,6 +3747,8 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 .user-badge.local { background: rgba(22, 163, 74, 0.1); color: var(--success); }
 .user-badge.mute, .user-badge.banned { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
@@ -3751,6 +3770,13 @@ html[data-theme='dark'] .cal-cell.is-rest { background: rgba(240, 86, 86, 0.1); 
 
 .user-manage-tip { font-size: 12.5px; color: var(--text-secondary); padding: 6px 0; }
 .user-section-title { font-size: 12px; font-weight: 650; color: var(--text-faint); margin-top: 8px; }
+
+/* 邀请与审批：生成行 + 申请信息 */
+.invite-create { display: flex; gap: 6px; margin: 8px 0 2px; flex-wrap: wrap; }
+.invite-create .modal-input { flex: 1; min-width: 120px; padding: 7px 9px; }
+.invite-create input[type='number'] { flex: 0 0 56px; min-width: 56px; }
+.app-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.app-meta { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 房间标题栏：机器人设置按钮 ===== */
 .rt-bot {

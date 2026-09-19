@@ -75,6 +75,7 @@ const SOCKET_TIER = {
   // 严格档：管理/通话控制等低频且代价高的动作
   strict: new Set([
     'admin_kick', 'admin_mute', 'admin_unban', 'admin_botban', 'admin_users', 'admin_audit',
+    'admin_login', 'admin_invites', 'admin_applications', 'admin_approve', 'admin_reject',
     'lifecycle_sweep', 'room_history_clear', 'history_clear',
     'call_user', 'call_accept', 'call_reject', 'call_end',
     'group_create', 'ss_start', 'share_register'

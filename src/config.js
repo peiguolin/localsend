@@ -34,7 +34,13 @@ const CONFIG_DEFS = {
   botFollowupSec: { def: 60, type: 'int', env: 'LOCALSEND_BOT_FOLLOWUP_SEC', restart: false },
   // 发言限流（防刷屏；连续超量自动短禁言；0=不限；均即时生效）
   msgRateLimit:     { def: 12, type: 'int', env: 'LOCALSEND_MSG_RATE_LIMIT',      restart: false },
-  msgRateWindowSec: { def: 10, type: 'int', env: 'LOCALSEND_MSG_RATE_WINDOW_SEC', restart: false }
+  msgRateWindowSec: { def: 10, type: 'int', env: 'LOCALSEND_MSG_RATE_WINDOW_SEC', restart: false },
+  // 公网模式：'off'（默认，局域网匿名）| 'invite'（邀请码 + 审批 + 登录）
+  publicMode:       { def: 'off', type: 'str', env: 'LOCALSEND_PUBLIC_MODE',      restart: true },
+  // 管理员远程口令（invite 模式下远程管理用；空 = 禁用远程管理，仅宿主机可管）
+  adminPassword:    { def: '',   type: 'str', env: 'LOCALSEND_ADMIN_PASSWORD',    restart: false },
+  // 同 IP 注册/申请数上限（防一人多号；0 = 不限）
+  ipRegLimit:       { def: 2,    type: 'int', env: 'LOCALSEND_IP_REG_LIMIT',      restart: false }
 };
 
 // 读取配置文件（不存在或损坏则用默认）
@@ -224,6 +230,14 @@ const REMIND_LATE_MS = 30 * 60 * 1000;      // 触发时间已过去 30 分钟�
 const TRANSLATE_URL = cfg.translateUrl;
 const TRANSLATE_GTX = cfg.translateGtx;
 
+// 公网邀请模式（'off' | 'invite'）；'invite' 时开启邀请码申请 + 审批 + 登录认证
+const PUBLIC_MODE = cfg.publicMode === 'invite' ? 'invite' : 'off';
+const ADMIN_PASSWORD = String(cfg.adminPassword || '');  // 远程管理口令（空 = 仅宿主机）
+const IP_REG_LIMIT = cfg.ipRegLimit;
+
+// 会话有效期（毫秒）：30 天
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 module.exports = {
   ROOT_DIR, CONFIG_FILE, CONFIG_DEFS, PORT, currentConfig, writeConfigFile,
   UPLOAD_DIR, META_FILE, MAX_FILE_SIZE, CHUNK_SIZE, TMP_DIR,
@@ -234,5 +248,6 @@ module.exports = {
   SS_MAX_VIEWERS, CHAT_LOG_MAX, RECALL_WINDOW,
   FILE_TTL_DAYS, MAX_UPLOAD_BYTES, MSG_TTL_DAYS, TMP_STALE_MS, SWEEP_INTERVAL, ORPHAN_MIN_AGE_MS,
   REMIND_TICK_MS, REMIND_LATE_MS,
-  TRANSLATE_URL, TRANSLATE_GTX
+  TRANSLATE_URL, TRANSLATE_GTX,
+  PUBLIC_MODE, ADMIN_PASSWORD, IP_REG_LIMIT, SESSION_TTL_MS
 };

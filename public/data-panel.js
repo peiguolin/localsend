@@ -130,7 +130,10 @@
     botContextN: '上下文条数', botTimeoutMs: '生成超时(ms)',
     botVision: '允许机器人看图（视觉模型；图片会发送到接口）',
     botFollowupSec: '续聊窗口(秒，@后直接追问免再@，0=关)',
-    msgRateLimit: '发言上限(条/窗口，0=不限)', msgRateWindowSec: '限流窗口(秒)'
+    msgRateLimit: '发言上限(条/窗口，0=不限)', msgRateWindowSec: '限流窗口(秒)',
+    publicMode: '公网模式（off=局域网匿名 / invite=邀请制）',
+    adminPassword: '管理员远程口令（只写，不回显；留空=仅宿主机）',
+    ipRegLimit: '同 IP 账号上限（0=不限）'
   };
 
   // 按模块分组的配置项
@@ -141,8 +144,11 @@
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
     { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botVision', 'botFollowupSec', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
     { id: 'behavior', title: '行为与限制', desc: '发言限流 · 防刷屏自动禁言', fields: ['msgRateLimit', 'msgRateWindowSec'] },
+    { id: 'public',   title: '公网邀请',   desc: '邀请制开关 · 管理员远程口令 · 同 IP 上限', fields: ['publicMode', 'adminPassword', 'ipRegLimit'] },
     // 用户管理：非静态配置，special 视图（在线用户列表 + 剔除/禁言/机器人权限）
-    { id: 'users',    title: '用户管理',   desc: '在线用户 · 剔除 / 禁言 / 机器人权限', fields: [], special: 'users', countLabel: '在线管理' }
+    { id: 'users',    title: '用户管理',   desc: '在线用户 · 剔除 / 禁言 / 机器人权限', fields: [], special: 'users', countLabel: '在线管理' },
+    // 邀请与审批：非静态配置，special 视图（邀请码管理 + 加入申请审批，含 IP 审计）
+    { id: 'invites',  title: '邀请与审批', desc: '邀请码管理 · 加入申请审批（含 IP 审计）', fields: [], special: 'invites', countLabel: '邀请管理' }
   ];
 
   let currentCfg = null;      // 最近一次拉取/保存后的生效配置（含 *Restart 标记）
@@ -176,7 +182,7 @@
         ta.placeholder = '（可选）定义机器人角色与回答风格';
         ta.value = v === undefined ? '' : String(v);
         row.appendChild(ta);
-      } else if (k === 'botApiKey') {
+      } else if (k === 'botApiKey' || k === 'adminPassword') {
         // 密码框：只写不回显，留空表示保持原值
         const input = document.createElement('input');
         input.type = 'password';
@@ -225,6 +231,10 @@
       // 用户管理：无静态表单/保存按钮，渲染在线用户列表
       dataConfigSaveBtn.hidden = true;
       renderUserManage();
+    } else if (g.special === 'invites') {
+      // 邀请与审批：无静态表单/保存按钮，渲染邀请码与申请列表
+      dataConfigSaveBtn.hidden = true;
+      renderInvites();
     } else {
       dataConfigSaveBtn.hidden = false;
       renderConfigCard(g.fields);
@@ -378,6 +388,7 @@
 
   function renderUserManage() {
     dataConfigGrid.innerHTML = '';
+    ensureAdminLoginRow(dataConfigGrid);
     dataConfigGrid.appendChild(tipEl('加载中…'));
     socket.emit('admin_users', (res) => {
       dataConfigGrid.innerHTML = '';
@@ -441,6 +452,172 @@
         box.appendChild(row);
       }
       dataConfigGrid.appendChild(box);
+    });
+  }
+
+  // ---------- 公网邀请：邀请码管理 + 加入申请审批（含 IP 审计） ----------
+  function inviteTip(text, ok) {
+    dataConfigTip.textContent = text || '';
+    dataConfigTip.className = 'data-config-tip' + (ok ? '' : ' err');
+  }
+
+  // 远程连接（非宿主机）解锁管理：admin_login 口令通过后本连接获得管理员身份
+  let remoteAdminOk = false;
+  function ensureAdminLoginRow(container) {
+    if (window.chatApp.isLocal || remoteAdminOk) return;
+    const box = document.createElement('div');
+    box.className = 'invite-create';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.className = 'modal-input';
+    input.placeholder = '远程管理口令（adminPassword）';
+    const btn = actionBtn('解锁管理', () => {
+      btn.disabled = true;
+      socket.emit('admin_login', { password: input.value }, (res) => {
+        btn.disabled = false;
+        if (res && res.ok) {
+          remoteAdminOk = true;
+          inviteTip('管理口令通过', true);
+          if (currentGroupId === 'users') renderUserManage();
+          else renderInvites();
+        } else {
+          inviteTip((res && res.error) || '口令错误', false);
+        }
+      });
+    });
+    box.appendChild(input);
+    box.appendChild(btn);
+    container.appendChild(box);
+    container.appendChild(tipEl('当前为远程连接：管理操作需口令解锁（仅本次连接有效，刷新后需重新输入）'));
+  }
+
+  function renderInvites() {
+    dataConfigGrid.innerHTML = '';
+    ensureAdminLoginRow(dataConfigGrid);
+    dataConfigGrid.appendChild(tipEl('加载中…'));
+    socket.emit('admin_invites', {}, (res) => {
+      if (currentGroupId !== 'invites') return;
+      const invites = (res && res.ok && res.invites) || [];
+
+      // 创建邀请码
+      const h1 = document.createElement('div');
+      h1.className = 'user-section-title';
+      h1.textContent = '生成邀请码';
+      dataConfigGrid.appendChild(h1);
+      const createBox = document.createElement('div');
+      createBox.className = 'invite-create';
+      const noteInput = document.createElement('input');
+      noteInput.className = 'modal-input';
+      noteInput.placeholder = '备注（发给谁）';
+      const usesInput = document.createElement('input');
+      usesInput.className = 'modal-input';
+      usesInput.type = 'number'; usesInput.min = 1; usesInput.max = 100; usesInput.value = 1;
+      usesInput.title = '可用次数';
+      const daysInput = document.createElement('input');
+      daysInput.className = 'modal-input';
+      daysInput.type = 'number'; daysInput.min = 0; daysInput.value = 0;
+      daysInput.title = '有效天数（0=永久）';
+      const createBtn = actionBtn('生成', () => {
+        createBtn.disabled = true;
+        socket.emit('admin_invites', {
+          action: 'create', note: noteInput.value, maxUses: Number(usesInput.value) || 1, expiresDays: Number(daysInput.value) || 0
+        }, (r2) => {
+          createBtn.disabled = false;
+          if (!r2 || !r2.ok) { inviteTip((r2 && r2.error) || '生成失败', false); return; }
+          inviteTip(`已生成邀请码：${r2.code}`, true);
+          renderInvites();
+        });
+      });
+      createBox.appendChild(noteInput);
+      createBox.appendChild(usesInput);
+      createBox.appendChild(daysInput);
+      createBox.appendChild(createBtn);
+      dataConfigGrid.appendChild(createBox);
+      dataConfigGrid.appendChild(tipEl('次数=可用人数 · 天数=有效期(0 永久)。邀请码只应发给可信的人。'));
+
+      // 邀请码列表
+      if (invites.length) {
+        const h2 = document.createElement('div');
+        h2.className = 'user-section-title';
+        h2.textContent = '邀请码';
+        dataConfigGrid.appendChild(h2);
+        for (const inv of invites) {
+          const row = document.createElement('div');
+          row.className = 'user-row';
+          const exp = inv.expiresAt
+            ? (inv.expiresAt > Date.now() ? `${Math.ceil((inv.expiresAt - Date.now()) / 86400000)} 天后过期` : '已过期')
+            : '永久';
+          const info = document.createElement('div');
+          info.className = 'user-info';
+          info.innerHTML =
+            `<span class="user-nick">${escapeHtml(inv.code)}</span>` +
+            `<span class="user-badge">${escapeHtml(String(inv.applied || 0))}/${escapeHtml(inv.maxUses)} 已用</span>` +
+            (inv.note ? `<span class="user-cid">${escapeHtml(inv.note)}</span>` : '') +
+            `<span class="user-cid">${escapeHtml(exp)}</span>`;
+          const actions = document.createElement('div');
+          actions.className = 'user-actions';
+          actions.appendChild(actionBtn('删除', () => {
+            if (!confirm(`删除邀请码 ${inv.code} ？`)) return;
+            socket.emit('admin_invites', { action: 'delete', code: inv.code }, (r2) => {
+              if (!r2 || !r2.ok) { inviteTip((r2 && r2.error) || '删除失败', false); return; }
+              renderInvites();
+            });
+          }, 'danger'));
+          row.appendChild(info);
+          row.appendChild(actions);
+          dataConfigGrid.appendChild(row);
+        }
+      }
+
+      // 加入申请（待审批）
+      socket.emit('admin_applications', {}, (res2) => {
+        if (currentGroupId !== 'invites') return;
+        const apps = (res2 && res2.ok && res2.applications) || [];
+        const h3 = document.createElement('div');
+        h3.className = 'user-section-title';
+        h3.textContent = `待审批申请（${apps.filter((a) => a.status === 'pending').length}）`;
+        dataConfigGrid.appendChild(h3);
+        const pending = apps.filter((a) => a.status === 'pending');
+        if (!pending.length) {
+          dataConfigGrid.appendChild(tipEl('暂无待审批的加入申请'));
+        }
+        for (const a of pending) {
+          const row = document.createElement('div');
+          row.className = 'user-row';
+          const t = new Date(a.createdAt);
+          const p = (n) => String(n).padStart(2, '0');
+          const timeStr = `${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
+          const info = document.createElement('div');
+          info.className = 'app-info';
+          info.innerHTML =
+            `<span class="user-nick">${escapeHtml(a.username)}</span>` +
+            `<span class="user-badge">${escapeHtml(a.nickname || '')}</span>` +
+            `<span class="app-meta">${escapeHtml(timeStr)} · 邀请码 ${escapeHtml(a.inviteCode)}</span>` +
+            `<span class="app-meta">IP: ${escapeHtml(a.ip || '-')}${a.ua ? ' · ' + escapeHtml(String(a.ua).slice(0, 60)) : ''}</span>`;
+          const actions = document.createElement('div');
+          actions.className = 'user-actions';
+          actions.appendChild(actionBtn('通过', () => {
+            if (!confirm(`通过「${a.username}」的加入申请？\nIP: ${a.ip}  ·  昵称: ${a.nickname || '-'}`)) return;
+            socket.emit('admin_approve', { id: a.id }, (r3) => {
+              if (!r3 || !r3.ok) { inviteTip((r3 && r3.error) || '通过失败', false); return; }
+              inviteTip(`已通过「${a.username}」，可用其用户名密码登录`, true);
+              renderInvites();
+            });
+          }));
+          actions.appendChild(actionBtn('拒绝', () => {
+            const reason = prompt(`拒绝「${a.username}」的申请，填写原因（可选）：`, '');
+            if (reason === null) return;
+            socket.emit('admin_reject', { id: a.id, reason }, (r4) => {
+              if (!r4 || !r4.ok) { inviteTip((r4 && r4.error) || '拒绝失败', false); return; }
+              inviteTip(`已拒绝「${a.username}」`, true);
+              renderInvites();
+            });
+          }, 'danger'));
+          row.appendChild(info);
+          row.appendChild(actions);
+          dataConfigGrid.appendChild(row);
+        }
+      });
     });
   }
 

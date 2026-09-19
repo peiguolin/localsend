@@ -1,8 +1,10 @@
-/* 用户管理（仅宿主机）：在线用户列表 + 剔除（封禁，禁重连）/ 限时禁言 / 禁机器人。
- * 状态在 src/state.js（mutes/botBans/bans，内存态，重启不持久）；
+/* 用户管理（宿主机；公网邀请模式下支持管理员口令远程登录）：
+ * 在线用户列表 + 剔除（封禁，禁重连）/ 限时禁言 / 禁机器人；邀请码创建与列表、加入申请审批。
+ * 状态在 src/state.js（mutes/botBans/bans，内存态，重启不持久）+ 持久化表；
  * 强制点：连接（server.js ban 校验）、聊天（rt-chat 禁言校验）、机器人（rt-bot botBans 校验）。 */
 const store = require('../db.js');
 const state = require('./state');
+const auth = require('./auth');
 const { isLocalSocket } = require('./util');
 
 // 启动时从 DB 恢复剔除/禁言/禁机器人（跨重启持久）
@@ -33,8 +35,40 @@ function persistUserAdmin(clientId) {
 }
 
 function register(io, socket) {
-  const guard = () => isLocalSocket(socket);
-  const deny = (cb) => cb && cb({ ok: false, error: '仅宿主机可操作' });
+  // 权限门槛：宿主机（LAN/本机），或已通过 admin_login 口令认证的远程管理员
+  const isAdmin = () => isLocalSocket(socket) || socket.data.isRemoteAdmin === true;
+  const guard = () => {
+    if (isAdmin()) return true;
+    return false;
+  };
+  const deny = (cb) => cb && cb({ ok: false, error: '仅管理员可操作' });
+
+  // 远程管理员口令登录（invite 模式下从公网管理；口令校验失败计数，超限断开防爆破）
+  let loginFails = 0;
+  socket.on('admin_login', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (isLocalSocket(socket)) { cb && cb({ ok: true, local: true }); return; }
+    if (!auth.remoteAdminEnabled()) return cb && cb({ ok: false, error: '未配置管理员口令，仅宿主机可管理' });
+    const pw = String((data && data.password) || '');
+    if (auth.checkAdminPassword(pw)) {
+      socket.data.isRemoteAdmin = true;
+      loginFails = 0;
+      try {
+        store.insertAudit({ actor: '远程管理员', action: 'admin_login', target: '', detail: `IP: ${auth.socketIp(socket)}` });
+      } catch (_) { /* ignore */ }
+      cb && cb({ ok: true, remote: true });
+    } else {
+      loginFails++;
+      if (loginFails >= 5) {
+        try {
+          store.insertAudit({ actor: '?', action: 'admin_login_fail', target: '', detail: `IP: ${auth.socketIp(socket)} 连续失败，已断开` });
+        } catch (_) { /* ignore */ }
+        socket.disconnect(true);
+        return;
+      }
+      cb && cb({ ok: false, error: '口令错误' });
+    }
+  });
 
   // 写一条审计日志（target 尽量解析为昵称，失败退回 clientId）
   function audit(action, targetCid, detail) {
@@ -99,6 +133,7 @@ function register(io, socket) {
     }
     state.bans.set(cid, { nickname, at: Date.now() });
     persistUserAdmin(cid);
+    if (auth.inviteEnabled()) { try { store.setUserBanned(cid, true); } catch (_) { /* ignore */ } }
     audit('kick', cid, `剔除并封禁（断开 ${kicked} 个连接）`);
     cb && cb({ ok: true, kicked });
   });
@@ -109,6 +144,7 @@ function register(io, socket) {
     const cid = String((data && data.clientId) || '');
     state.bans.delete(cid);
     persistUserAdmin(cid);
+    if (auth.inviteEnabled()) { try { store.setUserBanned(cid, false); } catch (_) { /* ignore */ } }
     audit('unban', cid, '解除封禁');
     cb && cb({ ok: true });
   });
@@ -150,6 +186,86 @@ function register(io, socket) {
     let rows = [];
     try { rows = store.listAudit((data && data.limit) || 50); } catch (_) { rows = []; }
     cb && cb({ ok: true, entries: rows });
+  });
+
+  // ---------- 公网邀请模式：邀请码管理 + 加入申请审批 ----------
+
+  // 邀请码：list | create | delete
+  socket.on('admin_invites', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    const action = String((data && data.action) || 'list');
+    if (action === 'create') {
+      const maxUses = Math.min(Math.max(Number((data && data.maxUses) || 1), 1), 100);
+      const expiresDays = Math.max(Number((data && data.expiresDays) || 0), 0);
+      const code = auth.genInviteCode();
+      try {
+        store.insertInvite({
+          code,
+          note: String((data && data.note) || '').slice(0, 100),
+          createdBy: socket.data.nickname || '管理员',
+          createdAt: Date.now(),
+          expiresAt: expiresDays > 0 ? Date.now() + expiresDays * 24 * 3600 * 1000 : 0,
+          usedCount: 0, maxUses
+        });
+        audit('invite_create', '', `生成邀请码 ${code}（可用 ${maxUses} 次${expiresDays > 0 ? `，${expiresDays} 天有效` : ''}）`);
+        cb && cb({ ok: true, code });
+      } catch (e) {
+        cb && cb({ ok: false, error: `创建失败：${e.message}` });
+      }
+      return;
+    }
+    if (action === 'delete') {
+      const code = String((data && data.code) || '');
+      try {
+        store.deleteInvite(code);
+        audit('invite_delete', '', `删除邀请码 ${code}`);
+        cb && cb({ ok: true });
+      } catch (e) {
+        cb && cb({ ok: false, error: `删除失败：${e.message}` });
+      }
+      return;
+    }
+    let rows = [];
+    try {
+      rows = store.listInvites().map((inv) => ({
+        ...inv,
+        applied: store.applicationCountByInvite(inv.code)
+      }));
+    } catch (_) { rows = []; }
+    cb && cb({ ok: true, invites: rows });
+  });
+
+  // 加入申请列表（含 IP / UA / 邀请码，供管理员审批判断）
+  socket.on('admin_applications', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    let rows = [];
+    try { rows = store.listPendingApplications(); } catch (_) { rows = []; }
+    cb && cb({ ok: true, applications: rows });
+  });
+
+  // 审批通过：申请 -> 账号（用户可用申请的账号密码登录）
+  socket.on('admin_approve', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    const id = Number((data && data.id) || 0);
+    const r = auth.approveApplication(id, socket.data.nickname || '管理员');
+    if (!r.ok) return cb && cb(r);
+    audit('join_approve', r.userId || '', `通过申请 #${id}（${r.username || ''}）`);
+    cb && cb({ ok: true, userId: r.userId, username: r.username });
+  });
+
+  // 审批拒绝
+  socket.on('admin_reject', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    const id = Number((data && data.id) || 0);
+    const reason = String((data && data.reason) || '');
+    const r = auth.rejectApplication(id, socket.data.nickname || '管理员', reason);
+    if (!r.ok) return cb && cb(r);
+    audit('join_reject', '', `拒绝申请 #${id}${reason ? `（原因：${reason}）` : ''}`);
+    cb && cb({ ok: true });
   });
 }
 

@@ -139,6 +139,45 @@ function init() {
       UNIQUE(room, msg_id, client_id, emoji)
     );
     CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(room, msg_id);
+    -- 公网邀请模式（publicMode='invite'）：账号 / 邀请码 / 加入申请
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      pass_hash TEXT NOT NULL,
+      nickname TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'user',
+      banned INTEGER NOT NULL DEFAULT 0,
+      created_ip TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      last_ip TEXT NOT NULL DEFAULT '',
+      last_seen INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_banned ON users(banned);
+    CREATE TABLE IF NOT EXISTS invites (
+      code TEXT PRIMARY KEY,
+      note TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL DEFAULT 0,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      max_uses INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS join_applications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invite_code TEXT NOT NULL,
+      username TEXT NOT NULL,
+      pass_hash TEXT NOT NULL,
+      nickname TEXT NOT NULL DEFAULT '',
+      ip TEXT NOT NULL DEFAULT '',
+      ua TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      reject_reason TEXT NOT NULL DEFAULT '',
+      reviewed_by TEXT NOT NULL DEFAULT '',
+      reviewed_at INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_apps_status ON join_applications(status);
+    CREATE INDEX IF NOT EXISTS idx_apps_ip ON join_applications(ip);
   `);
   // 兼容旧库：已有表缺 client_id 列时补上
   const cols = db.prepare(`PRAGMA table_info(messages)`).all();
@@ -719,6 +758,193 @@ function setRoomBot(room, enabled, prompt) {
   );
 }
 
+// ---------- 公网邀请模式：账号 / 邀请码 / 加入申请 ----------
+
+// 按用户名取账号（登录用；未找到返回 null）
+function getUserByUsername(username) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, username, pass_hash AS passHash, nickname, role, banned,
+           created_ip AS createdIp, created_at AS createdAt, last_ip AS lastIp, last_seen AS lastSeen
+    FROM users WHERE username = ?
+  `).get(String(username || ''));
+}
+
+function getUserById(id) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, username, pass_hash AS passHash, nickname, role, banned,
+           created_ip AS createdIp, created_at AS createdAt, last_ip AS lastIp, last_seen AS lastSeen
+    FROM users WHERE id = ?
+  `).get(String(id || ''));
+}
+
+// 新建账号（审批通过时调用）
+function insertUser(user) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO users (id, username, pass_hash, nickname, role, banned, created_ip, created_at, last_ip, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(user.id), String(user.username), String(user.passHash),
+    String(user.nickname || ''), String(user.role || 'user'),
+    user.banned ? 1 : 0, String(user.createdIp || ''), Number(user.createdAt) || Date.now(),
+    String(user.lastIp || ''), Number(user.lastSeen) || 0
+  );
+}
+
+function setUserBanned(id, banned) {
+  const d = getDb();
+  d.prepare('UPDATE users SET banned = ? WHERE id = ?').run(banned ? 1 : 0, String(id || ''));
+}
+
+function setUserNickname(id, nickname) {
+  const d = getDb();
+  d.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(String(nickname || ''), String(id || ''));
+}
+
+function touchUser(id, ip) {
+  const d = getDb();
+  d.prepare('UPDATE users SET last_ip = ?, last_seen = ? WHERE id = ?')
+    .run(String(ip || ''), Date.now(), String(id || ''));
+}
+
+function listUsers() {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, username, nickname, role, banned, created_ip AS createdIp, created_at AS createdAt,
+           last_ip AS lastIp, last_seen AS lastSeen
+    FROM users ORDER BY created_at DESC
+  `).all();
+}
+
+// 同 IP 已建账号数（防一人多号）
+function countUsersByIp(ip) {
+  const d = getDb();
+  const r = d.prepare('SELECT COUNT(*) AS n FROM users WHERE created_ip = ?').get(String(ip || ''));
+  return r ? r.n : 0;
+}
+
+// 邀请码
+function insertInvite(inv) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO invites (code, note, created_by, created_at, expires_at, used_count, max_uses)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    String(inv.code), String(inv.note || ''), String(inv.createdBy || ''),
+    Number(inv.createdAt) || Date.now(), Number(inv.expiresAt) || 0,
+    Number(inv.usedCount) || 0, Number(inv.maxUses) || 1
+  );
+}
+
+function getInvite(code) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT code, note, created_by AS createdBy, created_at AS createdAt, expires_at AS expiresAt,
+           used_count AS usedCount, max_uses AS maxUses
+    FROM invites WHERE code = ?
+  `).get(String(code || ''));
+}
+
+function listInvites() {
+  const d = getDb();
+  return d.prepare(`
+    SELECT code, note, created_by AS createdBy, created_at AS createdAt, expires_at AS expiresAt,
+           used_count AS usedCount, max_uses AS maxUses
+    FROM invites ORDER BY created_at DESC
+  `).all();
+}
+
+function deleteInvite(code) {
+  const d = getDb();
+  d.prepare('DELETE FROM invites WHERE code = ?').run(String(code || ''));
+}
+
+// 审批通过后邀请码使用计数 +1
+function bumpInviteUsed(code) {
+  const d = getDb();
+  d.prepare('UPDATE invites SET used_count = used_count + 1 WHERE code = ?').run(String(code || ''));
+}
+
+// 加入申请
+function insertJoinApplication(app) {
+  const d = getDb();
+  const r = d.prepare(`
+    INSERT INTO join_applications (invite_code, username, pass_hash, nickname, ip, ua, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(
+    String(app.inviteCode), String(app.username), String(app.passHash),
+    String(app.nickname || ''), String(app.ip || ''), String(app.ua || ''), Number(app.createdAt) || Date.now()
+  );
+  return Number(r.lastInsertRowid);
+}
+
+function getJoinApplication(id) {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, invite_code AS inviteCode, username, pass_hash AS passHash, nickname, ip, ua,
+           status, reject_reason AS rejectReason, reviewed_by AS reviewedBy, reviewed_at AS reviewedAt, created_at AS createdAt
+    FROM join_applications WHERE id = ?
+  `).get(Number(id) || 0);
+}
+
+// pending 列表（按新到旧）
+function listPendingApplications() {
+  const d = getDb();
+  return d.prepare(`
+    SELECT id, invite_code AS inviteCode, username, nickname, ip, ua, status,
+           reject_reason AS rejectReason, reviewed_at AS reviewedAt, created_at AS createdAt
+    FROM join_applications ORDER BY created_at DESC
+  `).all();
+}
+
+// 状态流转：pending -> approved / rejected
+function setApplicationStatus(id, status, reviewedBy, reason) {
+  const d = getDb();
+  d.prepare(`
+    UPDATE join_applications SET status = ?, reviewed_by = ?, reviewed_at = ?, reject_reason = ?
+    WHERE id = ?
+  `).run(
+    String(status || 'rejected'), String(reviewedBy || ''), Date.now(),
+    String(reason || ''), Number(id) || 0
+  );
+}
+
+// 某用户名是否已被占用（账号或 pending 申请）
+function usernameTaken(username) {
+  const d = getDb();
+  const u = String(username || '');
+  const a = d.prepare('SELECT 1 FROM users WHERE username = ?').get(u);
+  if (a) return true;
+  const b = d.prepare("SELECT 1 FROM join_applications WHERE username = ? AND status = 'pending'").get(u);
+  return !!b;
+}
+
+// 该邀请码已关联的申请数（pending + approved；超出 max_uses 则拒绝新申请）
+function applicationCountByInvite(code) {
+  const d = getDb();
+  const r = d.prepare("SELECT COUNT(*) AS n FROM join_applications WHERE invite_code = ? AND status IN ('pending','approved')")
+    .get(String(code || ''));
+  return r ? r.n : 0;
+}
+
+// 同 IP 申请数（pending + approved；防刷申请）
+function applicationCountByIp(ip) {
+  const d = getDb();
+  const r = d.prepare("SELECT COUNT(*) AS n FROM join_applications WHERE ip = ? AND status IN ('pending','approved')")
+    .get(String(ip || ''));
+  return r ? r.n : 0;
+}
+
+// 同 IP 未决申请数（pending 只算一次，审批后归入账号）
+function countPendingByIp(ip) {
+  const d = getDb();
+  const r = d.prepare("SELECT COUNT(*) AS n FROM join_applications WHERE ip = ? AND status = 'pending'")
+    .get(String(ip || ''));
+  return r ? r.n : 0;
+}
+
 // ---------- 管理审计日志（剔除/禁言/禁机器人/改配置；宿主机可翻，跨重启保留） ----------
 function insertAudit(entry) {
   const d = getDb();
@@ -751,5 +977,9 @@ module.exports = {
   insertAudit, listAudit,
   listPins, addPin, removePin, clearPins,
   setAnnouncement, getAnnouncement, deleteAnnouncement,
-  addReaction, removeReaction, loadReactionsForMessages, clearReactionsForRoom
+  addReaction, removeReaction, loadReactionsForMessages, clearReactionsForRoom,
+  getUserByUsername, getUserById, insertUser, setUserBanned, setUserNickname, touchUser, listUsers, countUsersByIp,
+  insertInvite, getInvite, listInvites, deleteInvite, bumpInviteUsed,
+  insertJoinApplication, getJoinApplication, listPendingApplications, setApplicationStatus,
+  usernameTaken, applicationCountByInvite, applicationCountByIp, countPendingByIp
 };

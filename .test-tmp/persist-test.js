@@ -21,9 +21,11 @@ function check(name, cond, extra) {
   else { failures++; console.error(`  ✗ ${name}${extra ? ' — ' + extra : ''}`); }
 }
 
-function connectSocket() {
+function connectSocket(cid) {
   return new Promise((resolve, reject) => {
-    const s = io(BASE, { rejectUnauthorized: false, transports: ['websocket'] });
+    const opts = { rejectUnauthorized: false, transports: ['websocket'] };
+    if (cid) opts.auth = { clientId: cid }; // 持久 clientId 走握手（服务端以握手为准）
+    const s = io(BASE, opts);
     s.once('welcome', (w) => resolve({ s, id: w.id, nickname: w.nickname, history: w.history || [] }));
     s.on('connect_error', reject);
     setTimeout(() => reject(new Error('connect timeout')), 5000);
@@ -69,7 +71,7 @@ async function main() {
 
   try {
     // 第一轮：发消息、画白板、撤回一条
-    const a = await connectSocket();
+    const a = await connectSocket('client-a');
     const b = await connectSocket();
     await sleep(300);
     senderNick = a.nickname;
@@ -122,7 +124,7 @@ async function main() {
   serverProc = await startServer();
   try {
     console.log('【重启后历史恢复】');
-    const c = await connectSocket();
+    const c = await connectSocket('client-a'); // 同 clientId 重连：历史里自己的消息保持"本人"
     await sleep(300);
     const texts = c.history.map((m) => m.text).filter(Boolean);
     check('welcome.history 恢复 3 条消息', texts.length === 3);
