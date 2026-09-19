@@ -35,8 +35,9 @@ function persistUserAdmin(clientId) {
 }
 
 function register(io, socket) {
-  // 权限门槛：宿主机（LAN/本机），或已通过 admin_login 口令认证的远程管理员
-  const isAdmin = () => isLocalSocket(socket) || socket.data.isRemoteAdmin === true;
+  // 权限门槛：宿主机（LAN/本机），或已通过 admin_login 口令认证的远程管理员，
+  // 或 role='admin' 的登录账号（管理员权限分配：宿主在「邀请与审批」里授予）
+  const isAdmin = () => isLocalSocket(socket) || socket.data.isRemoteAdmin === true || socket.data.role === 'admin';
   const guard = () => {
     if (isAdmin()) return true;
     return false;
@@ -134,6 +135,7 @@ function register(io, socket) {
     state.bans.set(cid, { nickname, at: Date.now() });
     persistUserAdmin(cid);
     if (auth.inviteEnabled()) { try { store.setUserBanned(cid, true); } catch (_) { /* ignore */ } }
+    auth.revokeUserSessions(cid); // 账号封禁：吊销其全部会话（HTTP 与后续握手一并失效）
     audit('kick', cid, `剔除并封禁（断开 ${kicked} 个连接）`);
     cb && cb({ ok: true, kicked });
   });
@@ -266,6 +268,36 @@ function register(io, socket) {
     if (!r.ok) return cb && cb(r);
     audit('join_reject', '', `拒绝申请 #${id}${reason ? `（原因：${reason}）` : ''}`);
     cb && cb({ ok: true });
+  });
+
+  // 账号列表（管理员权限分配用；含角色与封禁状态）
+  socket.on('admin_accounts', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    let rows = [];
+    try { rows = store.listUsers(); } catch (_) { rows = []; }
+    cb && cb({ ok: true, users: rows });
+  });
+
+  // 管理员权限分配/回收：把 role 授予/收回某个登录账号（invite 模式）
+  // 授予后该账号重新登录即获得管理员身份（socket 管理 + HTTP 配置读写）；
+  // 回收时吊销其全部会话，旧会话立即失效。
+  socket.on('admin_set_role', (data, cb) => {
+    if (typeof data === 'function') { cb = data; data = {}; }
+    if (!guard()) return deny(cb);
+    const username = String((data && data.username) || '').trim();
+    const role = String((data && data.role) || '') === 'admin' ? 'admin' : 'user';
+    if (!username) return cb && cb({ ok: false, error: '缺少用户名' });
+    const u = store.getUserByUsername(username);
+    if (!u) return cb && cb({ ok: false, error: '账号不存在' });
+    // 自己不能回收自己（防止唯一管理员意外锁死；宿主仍可用 admin_login/本机兜底）
+    if (role !== 'admin' && socket.data.role === 'admin' && String(u.id) === String(socket.data.clientId || '')) {
+      return cb && cb({ ok: false, error: '不能回收自己的管理员权限' });
+    }
+    const ok = store.setUserRole(username, role);
+    if (role !== 'admin') auth.revokeUserSessions(u.id); // 降权：旧会话立即失效
+    audit(role === 'admin' ? 'grant_admin' : 'revoke_admin', u.id, `账号 ${username} → ${role}`);
+    cb && cb({ ok, username, role });
   });
 }
 

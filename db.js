@@ -376,6 +376,16 @@ function clearHistory(room, includeStrokes) {
   return { messages: r.changes };
 }
 
+// 某 clientId / 账号名下文件消息累计字节（每人上传配额用；撤回/清理自动反映）
+function sumFileBytesByClient(clientId) {
+  const d = getDb();
+  const r = d.prepare(`
+    SELECT COALESCE(SUM(file_size), 0) AS total
+    FROM messages WHERE client_id = ? AND file_size IS NOT NULL AND recalled != 1
+  `).get(String(clientId || ''));
+  return Number((r && r.total) || 0);
+}
+
 // 所有被消息引用的 stored_name 集合（生命周期清扫时判断文件是否仍被引用）
 function listReferencedStoredNames() {
   const d = getDb();
@@ -803,6 +813,14 @@ function setUserNickname(id, nickname) {
   d.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(String(nickname || ''), String(id || ''));
 }
 
+// 管理员权限分配（role: 'admin' | 'user'）
+function setUserRole(username, role) {
+  const d = getDb();
+  const r = d.prepare('UPDATE users SET role = ? WHERE username = ?')
+    .run(String(role === 'admin' ? 'admin' : 'user'), String(username || ''));
+  return r.changes > 0;
+}
+
 function touchUser(id, ip) {
   const d = getDb();
   d.prepare('UPDATE users SET last_ip = ?, last_seen = ? WHERE id = ?')
@@ -968,7 +986,7 @@ module.exports = {
   DB_FILE, DATA_DIR,
   init, getDb, close,
   insertMessage, loadMessages, getMessageById, recallMessage, searchMessages, stats, clearHistory, trimMessages, updateMessageStoredName,
-  listReferencedStoredNames, trimMessagesByAge,
+  listReferencedStoredNames, trimMessagesByAge, sumFileBytesByClient,
   insertStroke, loadStrokes, removeStrokeByAuthor, clearStrokes,
   createRoom, loadRooms, updateRoom, deleteRoom,
   createEvent, listEvents, getEvent, deleteEvent, listUnfiredReminders, markEventReminded,
@@ -978,7 +996,7 @@ module.exports = {
   listPins, addPin, removePin, clearPins,
   setAnnouncement, getAnnouncement, deleteAnnouncement,
   addReaction, removeReaction, loadReactionsForMessages, clearReactionsForRoom,
-  getUserByUsername, getUserById, insertUser, setUserBanned, setUserNickname, touchUser, listUsers, countUsersByIp,
+  getUserByUsername, getUserById, insertUser, setUserBanned, setUserNickname, setUserRole, touchUser, listUsers, countUsersByIp,
   insertInvite, getInvite, listInvites, deleteInvite, bumpInviteUsed,
   insertJoinApplication, getJoinApplication, listPendingApplications, setApplicationStatus,
   usernameTaken, applicationCountByInvite, applicationCountByIp, countPendingByIp

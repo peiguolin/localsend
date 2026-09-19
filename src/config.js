@@ -40,7 +40,9 @@ const CONFIG_DEFS = {
   // 管理员远程口令（invite 模式下远程管理用；空 = 禁用远程管理，仅宿主机可管）
   adminPassword:    { def: '',   type: 'str', env: 'LOCALSEND_ADMIN_PASSWORD',    restart: false },
   // 同 IP 注册/申请数上限（防一人多号；0 = 不限）
-  ipRegLimit:       { def: 2,    type: 'int', env: 'LOCALSEND_IP_REG_LIMIT',      restart: false }
+  ipRegLimit:       { def: 2,    type: 'int', env: 'LOCALSEND_IP_REG_LIMIT',      restart: false },
+  // 每人上传配额（按 clientId / 账号累计已发文件字节，0 = 不限；LAN 与 invite 模式通用，即时生效）
+  perUserUploadMB:  { def: 0,    type: 'float', env: 'LOCALSEND_PER_USER_UPLOAD_MB', restart: false }
 };
 
 // 读取配置文件（不存在或损坏则用默认）

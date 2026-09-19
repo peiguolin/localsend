@@ -133,7 +133,8 @@
     msgRateLimit: '发言上限(条/窗口，0=不限)', msgRateWindowSec: '限流窗口(秒)',
     publicMode: '公网模式（off=局域网匿名 / invite=邀请制）',
     adminPassword: '管理员远程口令（只写，不回显；留空=仅宿主机）',
-    ipRegLimit: '同 IP 账号上限（0=不限）'
+    ipRegLimit: '同 IP 账号上限（0=不限）',
+    perUserUploadMB: '每人上传配额(MB，按账号/设备累计，0=不限)'
   };
 
   // 按模块分组的配置项
@@ -144,7 +145,7 @@
     { id: 'translate', title: '翻译',      desc: '翻译引擎地址 · 谷歌端点回退', fields: ['translateUrl', 'translateGtx'] },
     { id: 'bot',      title: 'AI 机器人',  desc: 'OpenAI 兼容接口 · @提及触发 · 全房间可用', fields: ['botEnabled', 'botName', 'botBaseUrl', 'botApiKey', 'botModel', 'botVision', 'botFollowupSec', 'botPrompt', 'botContextN', 'botTimeoutMs'] },
     { id: 'behavior', title: '行为与限制', desc: '发言限流 · 防刷屏自动禁言', fields: ['msgRateLimit', 'msgRateWindowSec'] },
-    { id: 'public',   title: '公网邀请',   desc: '邀请制开关 · 管理员远程口令 · 同 IP 上限', fields: ['publicMode', 'adminPassword', 'ipRegLimit'] },
+    { id: 'public',   title: '公网邀请',   desc: '邀请制开关 · 管理员口令 · 同 IP 上限 · 每人配额', fields: ['publicMode', 'adminPassword', 'ipRegLimit', 'perUserUploadMB'] },
     // 用户管理：非静态配置，special 视图（在线用户列表 + 剔除/禁言/机器人权限）
     { id: 'users',    title: '用户管理',   desc: '在线用户 · 剔除 / 禁言 / 机器人权限', fields: [], special: 'users', countLabel: '在线管理' },
     // 邀请与审批：非静态配置，special 视图（邀请码管理 + 加入申请审批，含 IP 审计）
@@ -415,7 +416,8 @@
     kick: '剔除封禁', unban: '解除封禁',
     mute: '禁言', unmute: '解除禁言',
     botban: '禁机器人', unbotban: '恢复机器人',
-    config: '修改配置'
+    config: '修改配置',
+    grant_admin: '授予管理员', revoke_admin: '收回管理员'
   };
 
   function fmtAuditTime(ts) {
@@ -613,6 +615,52 @@
               renderInvites();
             });
           }, 'danger'));
+          row.appendChild(info);
+          row.appendChild(actions);
+          dataConfigGrid.appendChild(row);
+        }
+      });
+
+      // 账号（管理员权限分配）：role='admin' 的账号可远程管理（socket + HTTP 配置）
+      socket.emit('admin_accounts', {}, (res3) => {
+        if (currentGroupId !== 'invites') return;
+        const accs = (res3 && res3.ok && res3.users) || [];
+        if (!accs.length) return;
+        const h4 = document.createElement('div');
+        h4.className = 'user-section-title';
+        h4.textContent = '账号（管理员权限）';
+        dataConfigGrid.appendChild(h4);
+        for (const u of accs) {
+          const row = document.createElement('div');
+          row.className = 'user-row';
+          const info = document.createElement('div');
+          info.className = 'user-info';
+          info.innerHTML =
+            `<span class="user-nick">${escapeHtml(u.username)}</span>` +
+            (u.role === 'admin' ? '<span class="user-badge local">管理员</span>' : '') +
+            (u.banned ? '<span class="user-badge banned">已封禁</span>' : '') +
+            `<span class="user-cid">${escapeHtml(u.nickname || '')}</span>`;
+          const actions = document.createElement('div');
+          actions.className = 'user-actions';
+          if (u.role === 'admin') {
+            actions.appendChild(actionBtn('取消管理员', () => {
+              if (!confirm(`收回「${u.username}」的管理员权限？\n其当前会话将立即失效，需重新登录。`)) return;
+              socket.emit('admin_set_role', { username: u.username, role: 'user' }, (r5) => {
+                if (!r5 || !r5.ok) { inviteTip((r5 && r5.error) || '操作失败', false); return; }
+                inviteTip(`已收回「${u.username}」管理员权限`, true);
+                renderInvites();
+              });
+            }, 'danger'));
+          } else {
+            actions.appendChild(actionBtn('设为管理员', () => {
+              if (!confirm(`授予「${u.username}」管理员权限？\n其将能管理用户/邀请审批并读写全部配置。`)) return;
+              socket.emit('admin_set_role', { username: u.username, role: 'admin' }, (r6) => {
+                if (!r6 || !r6.ok) { inviteTip((r6 && r6.error) || '操作失败', false); return; }
+                inviteTip(`已授予「${u.username}」管理员权限，其重新登录后生效`, true);
+                renderInvites();
+              });
+            }));
+          }
           row.appendChild(info);
           row.appendChild(actions);
           dataConfigGrid.appendChild(row);

@@ -54,16 +54,31 @@ function revokeSession(token) {
   if (token) state.sessions.delete(String(token));
 }
 
-// ---------- IP 提取（反代场景读 X-Forwarded-For 首段，直连退回 socket 地址） ----------
+// 账号是否被封禁（封禁表由 loadBannedUsersFromDb 载入，key = 账号 id）
+function isUserBanned(userId) {
+  return !!userId && state.bans.has(String(userId));
+}
+
+// 吊销某账号的全部会话（降权 / 封禁时调用，防止旧会话继续以管理员身份或已封禁身份使用）
+function revokeUserSessions(userId) {
+  const id = String(userId || '');
+  if (!id) return;
+  for (const [token, s] of state.sessions) {
+    if (String(s.userId) === id) state.sessions.delete(token);
+  }
+}
+
+// ---------- IP 提取（反代场景读 X-Forwarded-For 末段，直连退回 socket 地址） ----------
+// 注意取「末段」：可信反代把真实 IP 追加在链尾，客户端伪造的前缀段一律忽略（防伪造审计 IP / 绕 IP 上限）。
 function clientIp(req) {
   const xff = req && req.headers && req.headers['x-forwarded-for'];
-  if (xff) { const f = String(xff).split(',')[0].trim(); if (f) return f; }
+  if (xff) { const parts = String(xff).split(','); const f = parts[parts.length - 1].trim(); if (f) return f; }
   return (req && (req.ip || (req.socket && req.socket.remoteAddress))) || '';
 }
 
 function socketIp(socket) {
   const xff = socket && socket.handshake && socket.handshake.headers && socket.handshake.headers['x-forwarded-for'];
-  if (xff) { const f = String(xff).split(',')[0].trim(); if (f) return f; }
+  if (xff) { const parts = String(xff).split(','); const f = parts[parts.length - 1].trim(); if (f) return f; }
   return (socket && socket.handshake && socket.handshake.address) || '';
 }
 
@@ -194,7 +209,12 @@ function authMiddleware(req, res, next) {
   const pathname = String(req.path || req.url || '').split('?')[0];
   if (PUBLIC_PATHS.has(pathname)) return next();
   if (!GATED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p))) return next(); // 静态页面/资源
-  if (extractToken(req) && validateSession(extractToken(req))) return next();
+  const sess = extractToken(req) && validateSession(extractToken(req));
+  if (sess && isUserBanned(sess.userId)) {
+    revokeSession(extractToken(req));
+    return res.status(401).json({ ok: false, error: '该账号已被封禁' });
+  }
+  if (sess) return next();
   res.status(401).json({ ok: false, error: '未登录或会话已过期' });
 }
 
@@ -212,7 +232,7 @@ function extractToken(req) {
 
 module.exports = {
   inviteEnabled, hashPassword, verifyPassword,
-  issueSession, validateSession, revokeSession,
+  issueSession, validateSession, revokeSession, revokeUserSessions, isUserBanned,
   clientIp, socketIp, isDirectLocalSocket, isDirectLocalReq,
   genInviteCode, validateInvite, submitApplication, approveApplication, rejectApplication,
   loadBannedUsersFromDb,

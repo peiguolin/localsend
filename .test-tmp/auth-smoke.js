@@ -1,7 +1,9 @@
 /* 公网邀请审核模式集成测试（真实服务器 + socket.io-client + fetch）：
  * 实例A（invite 模式，本机管理员）：状态查询 / 无效邀请码 / 申请 / 邀请码一次性与占名 /
  *   未审批登录失败 / 无会话连接被拒 / 申请列表(带IP) / 审批通过 / 登录 / 带会话连接 /
- *   HTTP 门禁(401/放行) / 封禁后重连被拒 / 同 IP 注册上限 / 拒绝申请 / 登出。
+ *   HTTP 门禁(401/放行) / 封禁后重连被拒 / 同 IP 注册上限 / 拒绝申请 / 登出 /
+ *   XFF 末段防伪造(同 IP 上限按末段计数) / 管理员账号(授权→远程读改配置→socket 免口令管理→降权吊销会话) /
+ *   每人上传配额(超限拒绝/放行)。
  * 实例B（invite 模式，模拟远程）：LOCAL_ADDRS 不含本机 → 管理操作被拒 / admin_login 口令校验。
  * 实例C（off 模式回归）：匿名连接不受影响，/api/auth/status 返回 mode:'off'。 */
 'use strict';
@@ -59,6 +61,26 @@ async function api(base, p, opts) {
   }
 }
 
+// 文件上传（multipart）：携带会话 token + 模拟远程 XFF
+async function uploadFile(base, { token, xff, clientId, nickname, name, size, room }) {
+  const fd = new FormData();
+  fd.append('file', new Blob([Buffer.alloc(size, 0x61)]), name || 'q.txt');
+  fd.append('clientId', clientId || '');
+  fd.append('room', room || 'main');
+  fd.append('nickname', nickname || '测试');
+  const res = await fetch(base + '/upload', {
+    method: 'POST',
+    body: fd,
+    headers: {
+      ...(xff ? { 'x-forwarded-for': xff } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {})
+    }
+  });
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* 非 JSON */ }
+  return { status: res.status, body };
+}
+
 function connectSocket(base, authPayload, extraHeaders) {
   return new Promise((resolve, reject) => {
     const s = io(base, {
@@ -101,12 +123,16 @@ function socketEmit(sock, event, data) {
 async function main() {
   const tmpDb = (n) => path.join(__dirname, `.auth-${n}.db`);
   for (const n of ['a', 'b', 'c']) { try { fs.rmSync(tmpDb(n), { force: true }); } catch (_) {} }
+  const tmpConfigA = path.join(__dirname, '.auth-config.json');
+  try { fs.rmSync(tmpConfigA, { force: true }); } catch (_) {}
 
   console.log('=== 实例A：invite 模式（本机管理员） ===');
   const procA = await startServer(PORT_A, {
     LOCALSEND_DB_FILE: tmpDb('a'),
     LOCALSEND_PUBLIC_MODE: 'invite',
-    LOCALSEND_ADMIN_PASSWORD: 'admin-secret'
+    LOCALSEND_ADMIN_PASSWORD: 'admin-secret',
+    LOCALSEND_CONFIG_FILE: tmpConfigA,          // 配置读写隔离到临时文件
+    LOCALSEND_PER_USER_UPLOAD_MB: '0.05'        // 每人上传配额 50KB，验证配额拒绝
   });
 
   try {
@@ -192,15 +218,15 @@ async function main() {
     r = await api(BASE_A, '/', { headers: remoteHdr });
     check('页面壳放行（未认证可加载登录壳）', r.status === 200);
 
-    // 17. 封禁：旧连接断开，重连被拒（先挂监听再踢，避免事件先于监听到达）
+    // 17. 封禁：旧连接断开，会话被吊销，重连被拒（先挂监听再踢，避免事件先于监听到达）
     const discP = waitEvent(aliceS.s, 'disconnect');
     await socketEmit(adminS.s, 'admin_kick', { clientId: aliceUserId });
     const bannedDisc = await discP.catch(() => null);
     check('封禁后旧连接被断开', !!bannedDisc);
     const bannedRe = io(BASE_A, { rejectUnauthorized: false, transports: ['websocket'], auth: { sessionToken: token }, extraHeaders: remoteXff });
-    const bannedMsg = await waitEvent(bannedRe, 'system_message').catch(() => null);
-    await waitEvent(bannedRe, 'disconnect').catch(() => null);
-    check('封禁后重连被拒', !!bannedMsg && /移出/.test(bannedMsg.text || ''));
+    const bannedAuth = await waitEvent(bannedRe, 'auth_required').catch(() => null);
+    check('封禁后会话吊销，重连被拒（auth_required）', !!bannedAuth && /登录/.test(bannedAuth.error || ''));
+    bannedRe.close();
 
     // 18. 同 IP 注册上限（ipRegLimit 默认 2：alice 已建号 + bob pending = 2 → carol 被拒）
     inv = await socketEmit(adminS.s, 'admin_invites', { action: 'create', maxUses: 1 });
@@ -221,6 +247,55 @@ async function main() {
     // 20. 邀请码列表带 applied
     inv = await socketEmit(adminS.s, 'admin_invites', {});
     check('邀请码列表含已用计数', inv.ok === true && inv.invites.length >= 2 && inv.invites.some((i) => i.applied >= 1));
+
+    // 21. XFF 末段防伪造：客户端伪造前缀段不影响同 IP 上限计数（真实 IP 由可信反代追加在末段）
+    inv = await socketEmit(adminS.s, 'admin_invites', { action: 'create', maxUses: 3 });
+    const code3 = inv.code;
+    const forged = { 'x-forwarded-for': '6.6.6.6, 203.0.113.9' }; // 伪造前缀 + 真实 IP 203.0.113.9
+    r = await api(BASE_A, '/api/join', { method: 'POST', headers: forged, body: JSON.stringify({ code: code3, username: 'carol', password: 'secret123', nickname: '小C' }) });
+    check('申请（XFF 伪造前缀）入 pending', r.status === 200 && r.body.ok === true && r.body.id > 0);
+    const carolAppId = r.body.id;
+    r = await api(BASE_A, '/api/join', { method: 'POST', headers: { 'x-forwarded-for': '203.0.113.9' }, body: JSON.stringify({ code: code3, username: 'dave', password: 'secret123' }) });
+    check('第二份申请（同真实 IP）入 pending', r.status === 200 && r.body.ok === true);
+    r = await api(BASE_A, '/api/join', { method: 'POST', headers: { 'x-forwarded-for': '203.0.113.9' }, body: JSON.stringify({ code: code3, username: 'erin', password: 'secret123' }) });
+    // 若误取首段，carol 会被记为 6.6.6.6，本申请将成功 → 此断言即捕获 XFF 伪造漏洞
+    check('第三份同 IP 申请被拒（末段计数）', r.status === 400 && /上限/.test(r.body.error || ''));
+
+    // 22. 管理员账号：host 授予 carol 管理员 → 重新登录后获得 socket 管理 + HTTP 配置读写权
+    inv = await socketEmit(adminS.s, 'admin_approve', { id: carolAppId });
+    check('审批 carol 生成账号', inv.ok === true && /^u_/.test(inv.userId || ''));
+    const carolUserId = inv.userId;
+    inv = await socketEmit(adminS.s, 'admin_set_role', { username: 'carol', role: 'admin' });
+    check('授予 carol 管理员权限', inv.ok === true && inv.role === 'admin');
+    r = await api(BASE_A, '/api/login', { method: 'POST', body: JSON.stringify({ username: 'carol', password: 'secret123' }) });
+    check('carol 重新登录成功', r.status === 200 && r.body.token);
+    const token2 = r.body.token;
+    r = await api(BASE_A, '/api/config', { headers: { ...remoteHdr, authorization: `Bearer ${token2}` } });
+    check('管理员账号可远程读配置', r.status === 200 && r.body.ok === true && r.body.config && typeof r.body.config.msgRateLimit === 'number');
+    r = await api(BASE_A, '/api/config', { method: 'POST', headers: { ...remoteHdr, authorization: `Bearer ${token2}` }, body: JSON.stringify({ config: { msgRateLimit: 5 } }) });
+    check('管理员账号可远程改配置', r.status === 200 && r.body.ok === true);
+    r = await api(BASE_A, '/api/config', { headers: { ...remoteHdr, authorization: `Bearer ${token2}` } });
+    check('配置变更即时生效（msgRateLimit=5）', r.body.config.msgRateLimit === 5);
+    r = await api(BASE_A, '/api/config', { method: 'POST', headers: { ...remoteHdr, authorization: `Bearer ${token2}` }, body: JSON.stringify({ config: { msgRateLimit: 12 } }) });
+    check('还原配置', r.status === 200 && r.body.ok === true);
+    const carolS = await connectSocket(BASE_A, { sessionToken: token2 }, remoteXff);
+    inv = await socketEmit(carolS.s, 'admin_invites', { action: 'create', maxUses: 1 });
+    check('管理员账号 socket 管理免口令（admin_invites）', inv.ok === true && inv.code);
+    carolS.s.close();
+
+    // 23. 每人上传配额（perUserUploadMB=0.05MB）：超限拒绝，未超放行
+    r = await uploadFile(BASE_A, { token: token2, xff: '203.0.113.9', clientId: carolUserId, nickname: '小C', name: 'big.txt', size: 60 * 1024 });
+    check('上传超配额被拒', r.status === 403 && /配额/.test((r.body && r.body.error) || ''));
+    r = await uploadFile(BASE_A, { token: token2, xff: '203.0.113.9', clientId: carolUserId, nickname: '小C', name: 'small.txt', size: 5 * 1024 });
+    check('配额内上传成功', r.status === 200 && r.body.ok === true);
+
+    // 24. 收回管理员：会话被吊销 → 配置接口立即失效
+    inv = await socketEmit(adminS.s, 'admin_set_role', { username: 'carol', role: 'user' });
+    check('收回 carol 管理员权限', inv.ok === true && inv.role === 'user');
+    r = await api(BASE_A, '/api/config', { headers: { ...remoteHdr, authorization: `Bearer ${token2}` } });
+    check('降权后旧会话立即失效（配置 401）', r.status === 401);
+    r = await api(BASE_A, '/api/auth/status', { headers: { authorization: `Bearer ${token2}` } });
+    check('降权后旧会话已吊销（status authed=false）', r.body.authed === false);
 
     adminS.s.close();
     aliceS.s.close();
@@ -284,6 +359,7 @@ async function main() {
   }
 
   for (const n of ['a', 'b', 'c']) { try { fs.rmSync(tmpDb(n), { force: true }); } catch (_) {} }
+  try { fs.rmSync(tmpConfigA, { force: true }); } catch (_) {}
 
   console.log(failures === 0 ? '全部通过 ✅' : `失败 ${failures} 项 ❌`);
   process.exit(failures === 0 ? 0 : 1);

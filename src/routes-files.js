@@ -6,7 +6,7 @@ const multer = require('multer');
 const store = require('../db.js');
 const {
   MAX_FILE_SIZE, CHUNK_SIZE, TMP_DIR,
-  fileCategory, dateDirName, ensureArchiveDir
+  fileCategory, dateDirName, ensureArchiveDir, currentConfig
 } = require('./config');
 const { decodeOriginalName } = require('./util');
 const { saveMeta, getOriginalName, detectImageMime, detectAudioMime, STORED_NAME_RE, resolveStoredFile, findByHash, loadMeta } = require('./filemeta');
@@ -25,6 +25,16 @@ function computeFileSha256(filePath) {
     rs.on('end', () => resolve(hash.digest('hex')));
     rs.on('error', reject);
   });
+}
+
+// 每人上传配额（perUserUploadMB，0=不限；LAN 与 invite 通用，即时生效）：
+// 按 clientId 名下消息累计文件字节 + 本次新增 是否超限；超限返回错误文案，否则 null
+function quotaError(clientId, addBytes) {
+  const q = Number(currentConfig().perUserUploadMB || 0);
+  if (!(q > 0) || !clientId) return null;
+  const used = store.sumFileBytesByClient(String(clientId));
+  if (used + Number(addBytes || 0) > q * 1024 * 1024) return `每人上传配额 ${q}MB 已用完（已用 ${(used / 1048576).toFixed(1)}MB）`;
+  return null;
 }
 
 // 单文件上限的友好文案（随配置变化，如 2GB）
@@ -119,6 +129,12 @@ function registerRoutes(app, io) {
     if (denied) {
       fs.rmSync(req.file.path, { force: true });
       return res.status(403).json({ ok: false, error: denied });
+    }
+    // 每人上传配额：拒绝并删掉刚落地的文件
+    const qErr = quotaError(clientId, req.file.size);
+    if (qErr) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(403).json({ ok: false, error: qErr });
     }
 
     // 秒传：计算内容 hash，命中已有文件 → 删掉刚落地的副本，复用既有存储文件与元数据
@@ -260,6 +276,8 @@ function registerRoutes(app, io) {
       }
       const denied = checkAllowed(clientId);
       if (denied) return res.status(403).json({ ok: false, error: denied });
+      const qErr = quotaError(clientId, actualSize);
+      if (qErr) return res.status(403).json({ ok: false, error: qErr });
       const caption = String((req.body && req.body.text) || '').trim();
       const r = publishUploadMessage({ storedName, originalName, actualSize, nickname, clientId, room, caption });
       return res.json(r);
@@ -358,6 +376,13 @@ function registerRoutes(app, io) {
             fs.rmSync(finalPath, { force: true });
             fs.rmSync(dir, { recursive: true, force: true });
             return res.status(403).json({ ok: false, error: denied });
+          }
+          // 每人上传配额：拒绝并清理合并产物
+          const qErr = quotaError(clientId, actualSize);
+          if (qErr) {
+            fs.rmSync(finalPath, { force: true });
+            fs.rmSync(dir, { recursive: true, force: true });
+            return res.status(403).json({ ok: false, error: qErr });
           }
 
           const caption = String((req.body && req.body.text) || '').trim();
